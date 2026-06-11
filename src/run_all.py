@@ -184,7 +184,7 @@ def main():
                                 # Multi-step pipeline: one inference call per
                                 # legal decision step, with early stopping per
                                 # explicit_decisions.yaml. Returns a finished
-                                # results frame (id, text, labels, reply, ...).
+                                # results frame (id, description, DEF, ...).
                                 all_replies = util.multi_step_generation(test, lm, pc, config)
 
                                 # Serialize the chat-format prompts so the CSV
@@ -218,8 +218,8 @@ def main():
 
                                 pd.DataFrame({
                                     "id": test["id"],
-                                    "text": test["description"],
-                                    "true_label": test["DEF"],
+                                    "description": test["description"],
+                                    "DEF": test["DEF"],
                                     "predicted_label": y_pred,
                                     "reply": generated_answers,
                                     "prompt": [json.dumps(p, ensure_ascii=False) for p in prompts],

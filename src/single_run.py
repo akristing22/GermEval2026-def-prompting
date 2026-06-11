@@ -106,8 +106,8 @@ def main():
 
         pd.DataFrame({
             "id": test["id"],
-            "text": test["description"],
-            "true_label": test["DEF"],
+            "description": test["description"],
+            "DEF": test["DEF"],
             "predicted_label": y_pred,
             "reply": generated_answers,
             "prompt": [json.dumps(p, ensure_ascii=False) for p in prompts],

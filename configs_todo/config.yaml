@@ -1,0 +1,12 @@
+model_name: google/gemma-4-26B-A4B-it # google/gemma-4-26B-A4B-it, google/gemma-4-E4B-it, Qwen/Qwen3.5-9B, utter-project/EuroLLM-22B-Instruct-2512
+embedding_model: codefuse-ai/F2LLM-v2-1.7B
+prompt_mode: explicit #one of title, description, implicit, explicit
+demonstration_mode: dynamic #one of dynamic, static, None
+demonstration_size: 8
+embedding_mode: dense #one of sparse, dense, fusion, None
+retrieval_mode : similarity #one of similarity, diversity, mmr, random, None
+thinking_mode: False #not implemented yet, keep False
+data_path: /data
+results_path: /results
+template_path: /templates
+max_tokens: 10

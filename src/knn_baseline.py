@@ -7,7 +7,7 @@ with k=1: each test post is assigned the label of its most similar training
 post.
 
 Per-fold result CSVs are written to {results}/final_run/knn_baseline/ in the
-standard result format (id, text, true_label, predicted_label; no reply
+standard result format (id, description, DEF, predicted_label; no reply
 column since there is no model output). Per-fold and mean ± std scores are
 printed to stdout.
 
@@ -67,8 +67,8 @@ def main():
         output_path = os.path.join(output_dir, f"knn-baseline_fold-{fold_idx}.csv")
         df_out = pd.DataFrame({
             "id": test["id"],
-            "text": test["description"],
-            "true_label": test["DEF"],
+            "description": test["description"],
+            "DEF": test["DEF"],
             "predicted_label": y_pred,
         })
         df_out.to_csv(output_path, index=False)
@@ -78,7 +78,7 @@ def main():
         # Mirror evaluate.py, which excludes abstentions (NaN predictions);
         # the KNN never abstains, so the mask keeps every row here
         mask = pd.notna(df_out["predicted_label"])
-        y_true = df_out.loc[mask, "true_label"].astype(bool)
+        y_true = df_out.loc[mask, "DEF"].astype(bool)
         y_pred = df_out.loc[mask, "predicted_label"].astype(bool)
 
         # Precision/recall refer to the positive (prosecutable) class;

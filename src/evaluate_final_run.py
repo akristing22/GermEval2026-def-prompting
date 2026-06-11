@@ -78,12 +78,9 @@ def score_file(path: str) -> dict:
     Precision/recall are reported per class (True = prosecutable).
     """
     df = pd.read_csv(path)
-    # Explicit-mode results keep the raw dataset columns (multi_step_generation
-    # returns an extended copy of the test split) — normalize the label column
-    df = df.rename(columns={"DEF": "true_label"})
 
     mask = pd.notna(df["predicted_label"])
-    y_true = df.loc[mask, "true_label"].astype(bool)
+    y_true = df.loc[mask, "DEF"].astype(bool)
     y_pred = df.loc[mask, "predicted_label"].astype(bool)
 
     return {
