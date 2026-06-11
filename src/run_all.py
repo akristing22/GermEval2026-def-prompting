@@ -103,6 +103,16 @@ def main():
         config = yaml.safe_load(stream)
     config = util.validate_config(config)
 
+    # The grid loops below mutate `config` in place, so the per-fold knowledge
+    # bases are built from a pristine copy — forced to dynamic mode and sized
+    # for the largest grid demonstration size so all index structures exist
+    # regardless of which combination ran last.
+    kb_config = {
+        **config,
+        "demonstration_mode": "dynamic",
+        "demonstration_size": max(DEMONSTRATION_SIZES),
+    }
+
     login(token=os.environ["HF_TOKEN"])
 
     # Main dataset (semicolon-delimited) and the per-step annotations used by
@@ -124,12 +134,15 @@ def main():
 
         # Retrieval stores are built once per fold from the train split only,
         # then reconfigured per grid combination via update_config().
-        know_base = util.KnowledgeBase(train["description"], train["DEF"], config)
-        # Per-step knowledge base for explicit mode, restricted to the current
-        # train split; reuses the embedding model to avoid loading it twice.
-        step_know_base = util.MultiStepKnowledgeBase(
-            annotations, train["id"], config, embedding_model=know_base.embedding_model
-        )
+        if max(DEMONSTRATION_SIZES) > 0:
+            know_base = util.KnowledgeBase(train["description"], train["DEF"], kb_config)
+            # Per-step knowledge base for explicit mode, restricted to the current
+            # train split; reuses the embedding model to avoid loading it twice.
+            step_know_base = util.MultiStepKnowledgeBase(
+                annotations, train["id"], kb_config, embedding_model=know_base.embedding_model
+            )
+        else:
+            know_base = step_know_base = None  # zero-shot-only grid
 
         if lm is None:
             print(f"Loading model ({config['model_name']})...")

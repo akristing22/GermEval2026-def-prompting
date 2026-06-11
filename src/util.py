@@ -305,6 +305,13 @@ class KnowledgeBase:
         self.embedding_model = embedding_model
         self.update_config(config)
 
+        # Keep the raw data so the index structures can be built lazily in
+        # query() if the demonstration mode only becomes 'dynamic' after
+        # construction (via update_config)
+        self.data = data
+        self.labels = labels
+        self.built = False
+
         # Skip indexing when no data is supplied (configured but empty knowledge base)
         if data is not None and labels is not None:
             self.build(data,labels)
@@ -319,6 +326,11 @@ class KnowledgeBase:
         self.demonstration_size = config["demonstration_size"]
         self.demonstration_mode = config["demonstration_mode"]
         self.retrieval_mode = config["retrieval_mode"]
+        # Keep the BM25 retrievers in sync with a changed demonstration size
+        # (the diversity clusters stay fixed at their build-time size)
+        if getattr(self, "built", False):
+            self.retriever_hate.k = self.demonstration_size//2
+            self.retriever_non_hate.k = self.demonstration_size//2
         if self.embedding_model is None:
             self.embedding_model = HuggingFaceEmbeddings(
                 model_name=config["embedding_model"],
@@ -390,6 +402,8 @@ class KnowledgeBase:
             clustering_non_hate = KMeans(n_clusters=num_clusters).fit_predict(list(embeddings_non_hate.values()))
             for cluster_id,text in zip(clustering_non_hate,embeddings_non_hate.keys()):
                 self.cluster_non_hate[cluster_id].append(text)
+
+            self.built = True
 
         elif self.demonstration_mode == "static":
             # TODO: implement a search routine to find the best-performing static demonstrations
@@ -483,6 +497,12 @@ class KnowledgeBase:
         Returns:
             Dict mapping example text → label, with equal representation of each class.
         """
+
+        if demonstration_mode == "dynamic" and not self.built:
+            # The index structures are missing when the knowledge base was
+            # constructed under a non-dynamic config — build them now
+            self.demonstration_mode = "dynamic"
+            self.build(self.data, self.labels)
 
         if demonstration_mode == "dynamic" and self.retrieval_mode != "random":
             # Retrieve the most relevant examples from each class
