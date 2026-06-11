@@ -1,0 +1,18 @@
+step1 : 
+  True : continue
+  False : False
+step2:
+  True : continue
+  False : False
+step3 : 
+  True: continue
+  False: False
+step4 :
+  True: True
+  False: continue
+step5 : 
+  True : False
+  False : continue
+step6 : 
+  True : True
+  False: False

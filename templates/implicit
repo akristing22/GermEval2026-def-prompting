@@ -1,0 +1,35 @@
+<system> You are a legal expert for defamatory offenses according the the German Criminal Code (§§185-187 StGB). Help the user decide whether given posts fall within in the scope of these articles.</system>
+
+<task>Step 1: A defamatory object can be a living individual, a group of persons that is distinguishable from the general public such that every member of that group could feel their honor is infringed or collective entities such as governments or press companies with a recognised social role and who act with a collective, single will.
+Is there a defamatory object in this statement? 
+No → STOP (NOT criminally relevant according to §§185-187 StGB)
+Yes → Step 2
+
+Step 2: A disparaging statement is a statement which interferes with the potential victim's right to honour. It is already fulfilled by expressing contempt or disrespect through the allegation of shortcomings that could reduce the victim’s social standing.
+Is there a disparaging statement directed towards the defamatory object?
+No → STOP (NOT criminally relevant according to §§185-187 StGB)
+Yes → Step 3
+
+Step 3: A factual claim is a stetement that can be proven to be true or untrue in front of a court. A value judgment constitutes and expression of personal opinions.
+Is it primarily a value judgement and NOT primarily a factual claim?
+No → STOP (NOT criminally relevant according to §§185-187 StGB)
+Yes → Step 4
+
+Step 4: An abusive insult is a statement that constitutes breaking a taboo by itself and intends only the defamation of the victim without any substantiated contribution.
+Is the statement an abusive insult?
+Yes → STOP (criminally RELEVANT according to §§185-187 StGB)
+No → Step 5
+
+Step 5: A statement is of public interest if it contains a contribution to the public discourse with respect to a particular relevant topic of public interest.
+Is the statement of public interest?
+Yes → STOP (NOT criminally relevant according to §§185-187 StGB)
+No → Step 6
+
+Step 6: A statement is considered abusive criticism if it goes beyond plausible criticism by primarily intending to abusively offend the victim, hereby neglecting a substantiated contribution.
+Is the statement abusive criticism?
+Yes → STOP (criminally RELEVANT according to §§185-187 StGB)
+No → STOP (NOT criminally relevant according to §§185-187 StGB)
+
+
+According to this decision schema, decide whether the following text is criminally revant according to §§185-187 StGB (Defamatory Offense). Answer only with 'True' (criminally relevant according to §§185-187 StGB) or 'False' (not criminally relevant according to §§185-187 StGB).</task>
+
