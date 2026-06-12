@@ -4,7 +4,7 @@
 
 - fine-tune Gemma-4-E4B-it model 
 - zero-shot
-- description prompt template
+- implicit prompt template
 
 - quantisation?
 - 4-fold CV?
