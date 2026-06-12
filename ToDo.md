@@ -11,5 +11,6 @@
 
 ### API Inference
 
-- settings in configs_todo
+- fill LM_API class (or adapt LM class) for API calls
+- settings to run in configs_todo
 - 4-fold CV
