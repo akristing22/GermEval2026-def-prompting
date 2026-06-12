@@ -29,34 +29,136 @@ from sklearn.cluster import KMeans
 from sklearn.model_selection import train_test_split
 from tqdm import tqdm
 from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
+from pathlib import Path
+from dotenv import load_dotenv
+from openai import (
+    APIConnectionError,
+    APIError,
+    APITimeoutError,
+    OpenAI,
+    RateLimitError,
+)
+from tenacity import (
+    retry,
+    retry_if_exception_type,
+    stop_after_attempt,
+    wait_exponential_jitter,
+)
+
+from dataclasses import dataclass
+from typing import Literal
 
 
 # Allow PyTorch to use expandable memory segments to reduce fragmentation.
 # Must be set before the CUDA allocator is first used.
 os.environ["PYTORCH_ALLOC_CONF"] = "expandable_segments:True"
 
+# load up .env file variables to pull in secrets and keys
+load_dotenv(Path(__file__).parent.parent / ".env")
 
 # ---------------------------------------------------------------------------
 # Language Model
 # ---------------------------------------------------------------------------
 
+TRANSIENT_OPENAI_ERRORS = (
+    RateLimitError,
+    APITimeoutError,
+    APIConnectionError,
+    APIError,
+)
+
+
+def openai_backoff(max_retries: int = 6):
+    return retry(
+        retry=retry_if_exception_type(TRANSIENT_OPENAI_ERRORS),
+        wait=wait_exponential_jitter(initial=1, max=30),
+        stop=stop_after_attempt(max_retries),
+        reraise=True,
+    )
+
+
+@openai_backoff(max_retries=6)
+def completion_with_backoff(client, **kwargs):
+    return client.responses.create(**kwargs)
+
+
+@dataclass
+class API_CONFIG:
+    model: Literal[
+        "gpt-5.5-2026-04-23",
+        "gpt-5.4-2026-03-05",
+        "gpt-5.4-mini-2026-03-17",
+        "gpt-5-2025-08-07",
+        "gpt-4.1-2025-04-14",
+    ] = "gpt-5.5-2026-04-23"
+    temperature: float = 0.8
+    max_output_tokens: int = 160
+    reasoning_effort: Literal["none", "low", "medium", "high", "xhigh"] = "medium"
+    # top_logprobs (maximum number of tokens to return per position w. probability)
+    # top_p (alternative to temperature, filters tokens with top_p probability)
+
+
 class LM_API:
-
     """
-    Wrapper for an external API-based language model. Not implemented yet.
+     Wrapper for an external API-based language model. Implemented w.r.t OpenAI
+    model family. Now an OpenAI Responses API wrapper with the same public
+    generate() contract as LM.
     """
 
-    def __init__(self,api_config:dict):
-        raise NotImplementedError("LM_API is not implemented yet.")
-    
+    def __init__(self, api_config: API_CONFIG):
+        self.config = api_config
+        self.client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+
+    def update_kv_cache(self) -> None:
+        """Compatibility no-op so LM_API can be used where LM is expected."""
+        return None
+
+    def split_responses_instructions(
+        self,
+        messages: list[dict[str, str]],
+    ) -> tuple[str | None, list[dict[str, str]]]:
+        instructions = []
+        input_messages = []
+
+        for message in messages:
+            if message["role"] == "system":
+                instructions.append(message["content"])
+            else:
+                input_messages.append(message)
+
+        return ("\n\n".join(instructions) if instructions else None), input_messages
+
     def generate(
-            self,
-            prompts:list[list[dict[str,str]]],
-            max_tokens=10,
-            thinking_mode=False
-            ) -> list[str]:
-        # TODO
-        pass
+        self,
+        prompts: list[list[dict[str, str]]],
+        max_tokens: int = 10,
+        thinking_mode: bool = False,
+        do_sample: bool = False,
+    ) -> list[str]:
+        outputs = []
+
+        for prompt in tqdm(
+            prompts, total=len(prompts), mininterval=1.0, dynamic_ncols=True
+        ):
+            instructions, input_messages = self.split_responses_instructions(prompt)
+
+            api_kwargs = {
+                "model": self.config.model,
+                "input": input_messages,
+                "max_output_tokens": max_tokens,
+                "temperature": self.config.temperature if do_sample else 0,
+            }
+
+            if instructions is not None:
+                api_kwargs["instructions"] = instructions
+
+            if thinking_mode:
+                api_kwargs["reasoning"] = {"effort": self.config.reasoning_effort}
+
+            api_response = completion_with_backoff(self.client, **api_kwargs)
+            outputs.append(api_response.output_text)
+
+        return outputs
 
 
 class LM:
@@ -66,7 +168,7 @@ class LM:
     batch-size estimation from available GPU memory, and OOM recovery.
     """
 
-    def __init__(self,repo_id:str):
+    def __init__(self, repo_id: str):
         """
         Load a model from the HuggingFace Hub and estimate the maximum
         number of KV-cache tokens that fit in free GPU memory.
@@ -79,23 +181,22 @@ class LM:
         self.load()
         self.update_kv_cache()
 
-
     def load(self):
         """Load the model and tokenizer from HuggingFace Hub onto available devices."""
 
         self.model = AutoModelForCausalLM.from_pretrained(
             self.model_name,
             low_cpu_mem_usage=True,
-            device_map='auto',
-            #quantization_config=BitsAndBytesConfig(load_in_8bit=True),
-            )
+            device_map="auto",
+            # quantization_config=BitsAndBytesConfig(load_in_8bit=True),
+        )
         self.tokenizer = AutoTokenizer.from_pretrained(
             self.model_name,
             low_cpu_mem_usage=True,
-            )
+        )
         # Use EOS as the padding token so the model can handle variable-length batches
         self.tokenizer.pad_token = self.tokenizer.eos_token
-        self.tokenizer.padding_side  = 'left'
+        self.tokenizer.padding_side = "left"
         self.model.generation_config.pad_token_id = self.tokenizer.pad_token_id
 
         chat_template = getattr(self.tokenizer, "chat_template", None) or ""
@@ -110,24 +211,35 @@ class LM:
         # Sum free memory across all visible GPUs
         free_memory = sum(
             torch.cuda.mem_get_info(device)[0]
-            for device in range(torch.cuda.device_count()))
+            for device in range(torch.cuda.device_count())
+        )
 
         # Estimate KV-cache capacity: each token occupies
         # 2 (key+value) × 2 bytes (bfloat16) × num_layers × hidden_size bytes
         # Reference: https://www.baseten.co/blog/llm-transformer-inference-guide/#3500759-estimating-total-generation-time-on-each-gpu
-        if "num_hidden_layers" in self.model.config and "hidden_size" in self.model.config:
-            self.kv_cache_tokens = (
-                free_memory
-                /(2 * 2 * self.model.config.num_hidden_layers * self.model.config.hidden_size))
-        elif "text_config" in self.model.config and "num_hidden_layers" in self.model.config.text_config and "hidden_size" in self.model.config.text_config:
-            self.kv_cache_tokens = (
-                free_memory
-                /(2 * 2 * self.model.config.text_config.num_hidden_layers * self.model.config.text_config.hidden_size))
+        if (
+            "num_hidden_layers" in self.model.config
+            and "hidden_size" in self.model.config
+        ):
+            self.kv_cache_tokens = free_memory / (
+                2
+                * 2
+                * self.model.config.num_hidden_layers
+                * self.model.config.hidden_size
+            )
+        elif (
+            "text_config" in self.model.config
+            and "num_hidden_layers" in self.model.config.text_config
+            and "hidden_size" in self.model.config.text_config
+        ):
+            self.kv_cache_tokens = free_memory / (
+                2
+                * 2
+                * self.model.config.text_config.num_hidden_layers
+                * self.model.config.text_config.hidden_size
+            )
 
-
-
-
-    def get_batches(self,prompts,max_tokens):
+    def get_batches(self, prompts, max_tokens):
         """
         Partition prompts into batches whose total token footprint fits in GPU memory.
 
@@ -142,14 +254,15 @@ class LM:
             A list of batches, where each batch is a sub-list of prompts.
         """
 
-
         # Per-prompt token footprint, estimated from the longest prompt:
         # chars * 1.3 deliberately overestimates the token count (German text
         # averages well above 1 char per token), leaving headroom in the
         # KV cache, plus max_tokens for the generated continuation.
         max_prompt_chars = max(len(str(x)) for x in prompts)
-        batch_size = int(np.floor(self.kv_cache_tokens/(max_prompt_chars*1.3 + max_tokens)))
-        batch_size = max(1,batch_size) # Always process at least one prompt at a time
+        batch_size = int(
+            np.floor(self.kv_cache_tokens / (max_prompt_chars * 1.3 + max_tokens))
+        )
+        batch_size = max(1, batch_size)  # Always process at least one prompt at a time
 
         batches = []
 
@@ -158,13 +271,7 @@ class LM:
 
         return batches
 
-
-    def get_output(
-            self,
-            batch,
-            max_tokens=50,
-            thinking_mode=False
-    ) -> list[str]:
+    def get_output(self, batch, max_tokens=50, thinking_mode=False) -> list[str]:
         """
         Run greedy generation (do_sample=False) on a single batch of
         chat-formatted prompts.
@@ -193,8 +300,8 @@ class LM:
                     enable_thinking=thinking_mode,
                     padding=True,
                     return_tensors="pt",
-                    return_dict=True
-                    ).to('cuda')
+                    return_dict=True,
+                ).to("cuda")
             else:
                 inputs = self.tokenizer.apply_chat_template(
                     batch,
@@ -202,15 +309,15 @@ class LM:
                     add_generation_prompt=True,
                     padding=True,
                     return_tensors="pt",
-                    return_dict=True
-                    ).to('cuda')
+                    return_dict=True,
+                ).to("cuda")
 
         except jinja2.exceptions.TemplateError as e:
             print("Error in applying chat template: ", e)
             print("Batch that caused the error: ", batch)
             raise
 
-        input_length = inputs['input_ids'].shape[1]  # prompt length
+        input_length = inputs["input_ids"].shape[1]  # prompt length
 
         # handle OOM errors by splitting batch in half and recursively calling get_ouput
         oom = False
@@ -219,10 +326,10 @@ class LM:
                 **inputs,
                 do_sample=False,
                 max_new_tokens=max_tokens,
-                pad_token_id = self.tokenizer.pad_token_id
-                )
+                pad_token_id=self.tokenizer.pad_token_id,
+            )
             # Slice off the prompt tokens so only the newly generated tokens are decoded
-            new_tokens = generated_ids[:,input_length:]
+            new_tokens = generated_ids[:, input_length:]
             return self.tokenizer.batch_decode(new_tokens, skip_special_tokens=True)
 
         except RuntimeError as e:
@@ -235,21 +342,14 @@ class LM:
             # Split the batch in half and generate output for each half separately
             mid = len(batch) // 2
             return self.get_output(
-                batch[:mid],
-                max_tokens=max_tokens,
-                thinking_mode=thinking_mode
-                ) + self.get_output(
-                    batch[mid:],
-                    max_tokens=max_tokens,
-                    thinking_mode=thinking_mode
-                    )
+                batch[:mid], max_tokens=max_tokens, thinking_mode=thinking_mode
+            ) + self.get_output(
+                batch[mid:], max_tokens=max_tokens, thinking_mode=thinking_mode
+            )
 
     def generate(
-            self,
-            prompts:list[list[dict[str,str]]],
-            max_tokens=10,
-            thinking_mode=False
-            ) -> list[str]:
+        self, prompts: list[list[dict[str, str]]], max_tokens=10, thinking_mode=False
+    ) -> list[str]:
         """
         Generate text for a list of prompts, automatically batching to fit GPU memory.
 
@@ -261,16 +361,19 @@ class LM:
         Returns:
             List of output strings in the same order as the input prompts.
         """
-        batches = self.get_batches(prompts,max_tokens)
+        batches = self.get_batches(prompts, max_tokens)
         outputs = []
 
-        for batch in tqdm(batches,total=len(batches),mininterval=1.0, dynamic_ncols=True):
-            outputs.extend(self.get_output(batch,max_tokens=max_tokens,thinking_mode=thinking_mode))
+        for batch in tqdm(
+            batches, total=len(batches), mininterval=1.0, dynamic_ncols=True
+        ):
+            outputs.extend(
+                self.get_output(
+                    batch, max_tokens=max_tokens, thinking_mode=thinking_mode
+                )
+            )
 
         return outputs
-    
-
-
 
 
 # ---------------------------------------------------------------------------
@@ -300,7 +403,9 @@ class KnowledgeBase:
       - random     : sample uniformly from the training set
     """
 
-    def __init__(self,data:list[str],labels:list[bool],config:dict,embedding_model=None):
+    def __init__(
+        self, data: list[str], labels: list[bool], config: dict, embedding_model=None
+    ):
         # An already-loaded embedding model can be shared between knowledge bases
         self.embedding_model = embedding_model
         self.update_config(config)
@@ -314,9 +419,9 @@ class KnowledgeBase:
 
         # Skip indexing when no data is supplied (configured but empty knowledge base)
         if data is not None and labels is not None:
-            self.build(data,labels)
+            self.build(data, labels)
 
-    def update_config(self,config):
+    def update_config(self, config):
         """
         Adopt the retrieval-related settings of a (changed) config without
         re-indexing the data. Loads the embedding model on first call;
@@ -329,14 +434,12 @@ class KnowledgeBase:
         # Keep the BM25 retrievers in sync with a changed demonstration size
         # (the diversity clusters stay fixed at their build-time size)
         if getattr(self, "built", False):
-            self.retriever_hate.k = self.demonstration_size//2
-            self.retriever_non_hate.k = self.demonstration_size//2
+            self.retriever_hate.k = self.demonstration_size // 2
+            self.retriever_non_hate.k = self.demonstration_size // 2
         if self.embedding_model is None:
             self.embedding_model = HuggingFaceEmbeddings(
-                model_name=config["embedding_model"],
-                model_kwargs={"device": "cuda"})
-
-
+                model_name=config["embedding_model"], model_kwargs={"device": "cuda"}
+            )
 
     def build(self, data: list[str], labels: list[bool]):
         """
@@ -354,12 +457,11 @@ class KnowledgeBase:
             labels: Corresponding binary labels (True = prosecutable).
         """
         docs = [
-                    Document(page_content=text, metadata={"label": label})
-                    for text, label in zip(data,labels)
-                ]
+            Document(page_content=text, metadata={"label": label})
+            for text, label in zip(data, labels)
+        ]
 
         if self.demonstration_mode == "dynamic":
-
             # Dense index: one vector store over both classes; class filtering
             # happens at query time via a metadata filter
             vector_store = InMemoryVectorStore(self.embedding_model)
@@ -373,10 +475,10 @@ class KnowledgeBase:
             docs_non_hate = [doc for doc in docs if doc.metadata["label"] == 0]
 
             self.retriever_hate = BM25Retriever.from_documents(docs_hate)
-            self.retriever_hate.k = self.demonstration_size//2
+            self.retriever_hate.k = self.demonstration_size // 2
 
             self.retriever_non_hate = BM25Retriever.from_documents(docs_non_hate)
-            self.retriever_non_hate.k = self.demonstration_size//2
+            self.retriever_non_hate.k = self.demonstration_size // 2
 
             # Kept for random sampling in query()
             self.documents = docs
@@ -385,22 +487,30 @@ class KnowledgeBase:
             # already computed by the vector store; one cluster per
             # demonstration slot (demonstration_size // 2 per class)
             embeddings_hate = {
-                doc["text"]:doc["vector"] for _,doc in self.vector_store.store.items()
+                doc["text"]: doc["vector"]
+                for _, doc in self.vector_store.store.items()
                 if doc["metadata"]["label"] == 1
             }
             embeddings_non_hate = {
-                doc["text"]:doc["vector"] for _,doc in self.vector_store.store.items()
+                doc["text"]: doc["vector"]
+                for _, doc in self.vector_store.store.items()
                 if doc["metadata"]["label"] == 0
             }
-            num_clusters = self.demonstration_size//2
-            self.cluster_hate = {num:[] for num in range(0,num_clusters)}
-            clustering_hate = KMeans(n_clusters=num_clusters).fit_predict(list(embeddings_hate.values()))
-            for cluster_id,text in zip(clustering_hate,embeddings_hate.keys()):
+            num_clusters = self.demonstration_size // 2
+            self.cluster_hate = {num: [] for num in range(0, num_clusters)}
+            clustering_hate = KMeans(n_clusters=num_clusters).fit_predict(
+                list(embeddings_hate.values())
+            )
+            for cluster_id, text in zip(clustering_hate, embeddings_hate.keys()):
                 self.cluster_hate[cluster_id].append(text)
 
-            self.cluster_non_hate = {num:[] for num in range(0,num_clusters)}
-            clustering_non_hate = KMeans(n_clusters=num_clusters).fit_predict(list(embeddings_non_hate.values()))
-            for cluster_id,text in zip(clustering_non_hate,embeddings_non_hate.keys()):
+            self.cluster_non_hate = {num: [] for num in range(0, num_clusters)}
+            clustering_non_hate = KMeans(n_clusters=num_clusters).fit_predict(
+                list(embeddings_non_hate.values())
+            )
+            for cluster_id, text in zip(
+                clustering_non_hate, embeddings_non_hate.keys()
+            ):
                 self.cluster_non_hate[cluster_id].append(text)
 
             self.built = True
@@ -409,7 +519,7 @@ class KnowledgeBase:
             # TODO: implement a search routine to find the best-performing static demonstrations
             pass
 
-    def retrieve_dense(self, query:str, label:bool) -> dict[str, bool]:
+    def retrieve_dense(self, query: str, label: bool) -> dict[str, bool]:
         """
         Retrieve demonstration_size // 2 examples of one class from the dense
         index, using the configured retrieval_mode (similarity, mmr, or diversity).
@@ -418,19 +528,17 @@ class KnowledgeBase:
 
         if self.retrieval_mode == "similarity":
             closest_docs = self.vector_store.similarity_search(
-                query,
-                k=self.demonstration_size//2,
-                filter=class_filter
-                )
-            return {doc.page_content.strip():label for doc in closest_docs}
+                query, k=self.demonstration_size // 2, filter=class_filter
+            )
+            return {doc.page_content.strip(): label for doc in closest_docs}
         elif self.retrieval_mode == "mmr":
             closest_docs = self.vector_store.max_marginal_relevance_search(
                 query,
-                k=self.demonstration_size//2,
-                fetch_k=self.demonstration_size*2,
-                filter=class_filter
-                )
-            return {doc.page_content.strip():label for doc in closest_docs}
+                k=self.demonstration_size // 2,
+                fetch_k=self.demonstration_size * 2,
+                filter=class_filter,
+            )
+            return {doc.page_content.strip(): label for doc in closest_docs}
         elif self.retrieval_mode == "diversity":
             # One randomly drawn example per KMeans cluster of this class
             clustering = self.cluster_hate if label else self.cluster_non_hate
@@ -441,13 +549,11 @@ class KnowledgeBase:
 
             return docs
 
-
-    def retrieve_sparse(self, query:str, label:bool) -> dict[str, bool]:
+    def retrieve_sparse(self, query: str, label: bool) -> dict[str, bool]:
         """Retrieve the top BM25 matches from the given class's own retriever."""
         retriever = self.retriever_hate if label else self.retriever_non_hate
         closest_docs = retriever.invoke(query)
-        return {doc.page_content.strip():label for doc in closest_docs}
-
+        return {doc.page_content.strip(): label for doc in closest_docs}
 
     def retrieve(self, query: str, label: bool) -> dict[str, bool]:
         """
@@ -463,28 +569,27 @@ class KnowledgeBase:
         """
 
         if self.embedding_mode == "dense":
-            return self.retrieve_dense(query,label)
+            return self.retrieve_dense(query, label)
 
         elif self.embedding_mode == "sparse":
-            return self.retrieve_sparse(query,label)
+            return self.retrieve_sparse(query, label)
 
         elif self.embedding_mode == "fusion":
             # Alternate between dense and sparse results until k/2 examples
             # are collected; the dict deduplicates texts found by both
-            dense_demos = self.retrieve_dense(query,label)
-            sparse_demos = self.retrieve_sparse(query,label)
+            dense_demos = self.retrieve_dense(query, label)
+            sparse_demos = self.retrieve_sparse(query, label)
 
             demos = {}
-            for dense_demo, sparse_demo in zip(dense_demos.keys(),sparse_demos.keys()):
+            for dense_demo, sparse_demo in zip(dense_demos.keys(), sparse_demos.keys()):
                 demos[dense_demo] = label
-                if len(demos) == self.demonstration_size//2:
+                if len(demos) == self.demonstration_size // 2:
                     break
                 demos[sparse_demo] = label
-                if len(demos) == self.demonstration_size//2:
+                if len(demos) == self.demonstration_size // 2:
                     break
 
             return demos
-
 
     def query(self, query: str, demonstration_mode) -> dict[str, bool]:
         """
@@ -506,23 +611,25 @@ class KnowledgeBase:
 
         if demonstration_mode == "dynamic" and self.retrieval_mode != "random":
             # Retrieve the most relevant examples from each class
-            return self.retrieve(query,False) | self.retrieve(query,True)
+            return self.retrieve(query, False) | self.retrieve(query, True)
 
         elif self.retrieval_mode == "random":
             # Sample an equal number of examples from each class, ignoring the query
             negatives = [doc for doc in self.documents if not doc.metadata["label"]]
             positives = [doc for doc in self.documents if doc.metadata["label"]]
-            return (
-                {doc.page_content.strip(): doc.metadata["label"]
-                 for doc in random.sample(negatives, self.demonstration_size//2)}
-                | {doc.page_content.strip(): doc.metadata["label"]
-                   for doc in random.sample(positives, self.demonstration_size//2)}
-            )
+            return {
+                doc.page_content.strip(): doc.metadata["label"]
+                for doc in random.sample(negatives, self.demonstration_size // 2)
+            } | {
+                doc.page_content.strip(): doc.metadata["label"]
+                for doc in random.sample(positives, self.demonstration_size // 2)
+            }
 
         elif demonstration_mode == "static":
             # Pre-optimised fixed demonstration set — not implemented yet
             # (nothing sets static_demonstrations; see the TODO in build())
             return self.static_demonstrations
+
 
 # ---------------------------------------------------------------------------
 # Multi-step Knowledge Base (per-step retrieval for the 'explicit' pipeline)
@@ -533,11 +640,11 @@ class KnowledgeBase:
 # data/single_step_annotation.csv (column letters follow Zufall et al. 2019)
 STEP_ANNOTATION_COLUMNS = {
     "step1": "step_c_d_choice",  # defamatory object
-    "step2": "step_e_choice",    # disparaging statement
-    "step3": "step_f_choice",    # value judgement
-    "step4": "step_g_choice",    # abusive insult
-    "step5": "step_h_choice",    # public interest
-    "step6": "step_i_choice",    # abusive criticism
+    "step2": "step_e_choice",  # disparaging statement
+    "step3": "step_f_choice",  # value judgement
+    "step4": "step_g_choice",  # abusive insult
+    "step5": "step_h_choice",  # public interest
+    "step6": "step_i_choice",  # abusive criticism
 }
 
 
@@ -584,7 +691,9 @@ class MultiStepKnowledgeBase:
     examples at all gets no demonstrations (zero-shot for that step).
     """
 
-    def __init__(self, annotations: pd.DataFrame, train_ids, config: dict, embedding_model=None):
+    def __init__(
+        self, annotations: pd.DataFrame, train_ids, config: dict, embedding_model=None
+    ):
         """
         Build one KnowledgeBase per decision step.
 
@@ -614,12 +723,16 @@ class MultiStepKnowledgeBase:
 
             step_size = self.step_demonstration_size(step, config["demonstration_size"])
             if step_size == 0:
-                print(f"Warning: no annotated examples for one class at {step} — running this step zero-shot.")
+                print(
+                    f"Warning: no annotated examples for one class at {step} — running this step zero-shot."
+                )
                 self.step_kbs[step] = None
                 continue
 
             step_config = {**config, "demonstration_size": step_size}
-            kb = KnowledgeBase(texts, step_labels, step_config, embedding_model=self.embedding_model)
+            kb = KnowledgeBase(
+                texts, step_labels, step_config, embedding_model=self.embedding_model
+            )
             self.embedding_model = kb.embedding_model
             self.step_kbs[step] = kb
 
@@ -660,7 +773,6 @@ class MultiStepKnowledgeBase:
 # ---------------------------------------------------------------------------
 
 
-
 class PromptConstructor:
     """
     Builds chat-formatted prompts from templates, optionally injecting
@@ -674,17 +786,16 @@ class PromptConstructor:
                       multi_step_generation() with one inference call per step
     """
 
-    def __init__(self,knowledge_base:KnowledgeBase,config:dict):
+    def __init__(self, knowledge_base: KnowledgeBase, config: dict):
         self.prompt_mode = config["prompt_mode"]
         self.embedding_mode = config["embedding_mode"]
         self.knowledge_base = knowledge_base
         self.demonstration_mode = config["demonstration_mode"]
         self.demonstration_size = config["demonstration_size"]
         self.retrieval_mode = config["retrieval_mode"]
-        self.load_template(config["template_path"]+"/"+self.prompt_mode)
+        self.load_template(config["template_path"] + "/" + self.prompt_mode)
 
-
-    def load_template(self,path:str):
+    def load_template(self, path: str):
         """
         Read and parse a prompt template file.
 
@@ -697,26 +808,28 @@ class PromptConstructor:
             path: Path to the template file.
         """
 
-        with open(path,'r') as f:
+        with open(path, "r") as f:
             template = f.read()
 
         if self.prompt_mode == "explicit":
             self.template = {
                 f"step{num}": content.strip()
-                for num, content in re.findall(r'<step(\d+)>(.*?)</step\d+>', template, re.DOTALL)}
+                for num, content in re.findall(
+                    r"<step(\d+)>(.*?)</step\d+>", template, re.DOTALL
+                )
+            }
         else:
-            self.template = re.findall(r'<task>(.*?)</task>', template, re.DOTALL)[0].strip()
+            self.template = re.findall(r"<task>(.*?)</task>", template, re.DOTALL)[
+                0
+            ].strip()
 
-        self.system_prompt = re.findall(r'<system>(.*?)</system>',template, re.DOTALL)[0].strip()
-
+        self.system_prompt = re.findall(r"<system>(.*?)</system>", template, re.DOTALL)[
+            0
+        ].strip()
 
     def create_message(
-            self,
-            text,
-            task,
-            demonstrations=None,
-            system_prompt=False
-            ) -> list[dict[str,str]]:
+        self, text, task, demonstrations=None, system_prompt=False
+    ) -> list[dict[str, str]]:
         """
         Assemble a list of chat messages for a single classification example.
 
@@ -741,26 +854,25 @@ class PromptConstructor:
 
         messages.append({"role": "user", "content": task})
 
-
         if demonstrations is not None:
             demo_list = list(demonstrations.items())
-            random.shuffle(demo_list) # Randomise order to avoid position bias
+            random.shuffle(demo_list)  # Randomise order to avoid position bias
             for demo_text, label in demo_list:
                 messages.append({"role": "user", "content": demo_text})
-                messages.append({"role": "assistant", "content": "True" if label else "False"})
+                messages.append(
+                    {"role": "assistant", "content": "True" if label else "False"}
+                )
 
-        messages.append({"role":"user","content":text})
+        messages.append({"role": "user", "content": text})
         return messages
 
-
     def construct(
-            self,
-            text: str,
-            task:str | None=None,
-            system_prompt: bool =False,
-            step: str | None=None
-            ) -> list[dict[str,str]]:
-
+        self,
+        text: str,
+        task: str | None = None,
+        system_prompt: bool = False,
+        step: str | None = None,
+    ) -> list[dict[str, str]]:
         """
         Build a complete prompt for the given text.
 
@@ -777,25 +889,30 @@ class PromptConstructor:
             List of message dicts ready for the tokenizer's apply_chat_template.
         """
 
-
         if task is None:
             task = self.template
         if self.demonstration_size > 0:
             if step is not None:
-                demonstrations = self.knowledge_base.query(text, self.demonstration_mode, step=step)
+                demonstrations = self.knowledge_base.query(
+                    text, self.demonstration_mode, step=step
+                )
             else:
-                demonstrations = self.knowledge_base.query(text, self.demonstration_mode)
+                demonstrations = self.knowledge_base.query(
+                    text, self.demonstration_mode
+                )
         else:
             demonstrations = None
-        return self.create_message(text, task, demonstrations, system_prompt=system_prompt)
-
+        return self.create_message(
+            text, task, demonstrations, system_prompt=system_prompt
+        )
 
 
 # ---------------------------------------------------------------------------
 # Configuration validation
 # ---------------------------------------------------------------------------
 
-def validate_config(config:dict, check_model:bool=True) -> dict:
+
+def validate_config(config: dict, check_model: bool = True) -> dict:
     """
     Validate all fields of a pipeline configuration dict and rewrite
     inconsistent combinations to their canonical form (in place).
@@ -827,7 +944,6 @@ def validate_config(config:dict, check_model:bool=True) -> dict:
             f"Model '{config['model_name']}' does not exist on the HuggingFace Hub."
         )
 
-
     # --- Parameter range / allowed-value checks ---
     assert config["max_tokens"] > 0, "max_tokens must be a positive integer."
     assert config["thinking_mode"] in (True, False)
@@ -835,8 +951,13 @@ def validate_config(config:dict, check_model:bool=True) -> dict:
     assert config["prompt_mode"] in ("title", "description", "implicit", "explicit")
     assert config["demonstration_mode"] in ("dynamic", "static", None)
     assert config["demonstration_size"] >= 0
-    assert config["retrieval_mode"] in ("similarity", "diversity", "mmr", "random", None)
-
+    assert config["retrieval_mode"] in (
+        "similarity",
+        "diversity",
+        "mmr",
+        "random",
+        None,
+    )
 
     # --- Cross-parameter consistency ---
     # Each rule rewrites an inconsistent combination to its canonical form.
@@ -861,34 +982,49 @@ def validate_config(config:dict, check_model:bool=True) -> dict:
             config["demonstration_mode"] = "dynamic"
 
         if config["demonstration_mode"] == "dynamic":
-
-            if config["retrieval_mode"] == "random" and config["embedding_mode"] is not None:
+            if (
+                config["retrieval_mode"] == "random"
+                and config["embedding_mode"] is not None
+            ):
                 # Random sampling needs no index
                 config["embedding_mode"] = None
             elif config["embedding_mode"] is None and config["retrieval_mode"] is None:
                 # Nothing specified → cheapest strategy
                 config["retrieval_mode"] = "random"
-            elif config["embedding_mode"] is None and config["retrieval_mode"] != "random":
+            elif (
+                config["embedding_mode"] is None
+                and config["retrieval_mode"] != "random"
+            ):
                 # similarity/diversity/mmr need an index → default to dense
                 config["embedding_mode"] = "dense"
-            elif config["embedding_mode"] is not None and config["retrieval_mode"] is None:
+            elif (
+                config["embedding_mode"] is not None
+                and config["retrieval_mode"] is None
+            ):
                 config["retrieval_mode"] = "similarity"
 
-            if config["embedding_mode"] == "dense" and config["embedding_model"] is None:
+            if (
+                config["embedding_mode"] == "dense"
+                and config["embedding_model"] is None
+            ):
                 config["embedding_model"] = "codefuse-ai/F2LLM-0.6B"
 
             # diversity and mmr are only supported with dense embeddings
-            if config["embedding_mode"] in ["sparse","fusion"] and config["retrieval_mode"] != "similarity":
+            if (
+                config["embedding_mode"] in ["sparse", "fusion"]
+                and config["retrieval_mode"] != "similarity"
+            ):
                 config["retrieval_mode"] = "similarity"
 
     return config
+
 
 # ---------------------------------------------------------------------------
 # Helper utilities
 # ---------------------------------------------------------------------------
 
 
-def read_labels_from_answer(answer:str) -> bool | None:
+def read_labels_from_answer(answer: str) -> bool | None:
     """
     Extract a binary True/False label from a free-text model answer via
     case-insensitive substring matching on "true"/"false".
@@ -902,7 +1038,7 @@ def read_labels_from_answer(answer:str) -> bool | None:
     """
 
     lower = answer.lower()
-    has_false  = "false"  in lower
+    has_false = "false" in lower
     has_true = "true" in lower
 
     if has_false and not has_true:
@@ -912,7 +1048,7 @@ def read_labels_from_answer(answer:str) -> bool | None:
     return None  # Ambiguous
 
 
-def load_data(file_path: str) -> tuple[pd.DataFrame,pd.DataFrame]:
+def load_data(file_path: str) -> tuple[pd.DataFrame, pd.DataFrame]:
     """
     Load the dataset from a semicolon-delimited CSV and split into
     train (70 %) and test (30 %) sets with a fixed random seed.
@@ -923,8 +1059,8 @@ def load_data(file_path: str) -> tuple[pd.DataFrame,pd.DataFrame]:
     Returns:
         (train_df, test_df) tuple of DataFrames.
     """
-    df = pd.read_csv(file_path,sep=";")
-    return train_test_split(df,random_state=42, test_size=0.3)
+    df = pd.read_csv(file_path, sep=";")
+    return train_test_split(df, random_state=42, test_size=0.3)
 
 
 # ---------------------------------------------------------------------------
@@ -933,11 +1069,8 @@ def load_data(file_path: str) -> tuple[pd.DataFrame,pd.DataFrame]:
 
 
 def multi_step_generation(
-        test:pd.DataFrame,
-        lm:LM,
-        pc:PromptConstructor,
-        config:dict
-        ) -> pd.DataFrame:
+    test: pd.DataFrame, lm: LM, pc: PromptConstructor, config: dict
+) -> pd.DataFrame:
     """
     Run the multi-step ('explicit') classification pipeline over the test set.
 
@@ -970,26 +1103,27 @@ def multi_step_generation(
 
     # Initialise tracking columns on a deep copy so the original test set is unchanged
     all_replies = test.copy(deep=True)
-    all_replies["prompt"] = [None]*len(all_replies)
-    all_replies["continue"] = [True]*len(all_replies)
-    all_replies["predicted_label"] = [None]*len(all_replies)
+    all_replies["prompt"] = [None] * len(all_replies)
+    all_replies["continue"] = [True] * len(all_replies)
+    all_replies["predicted_label"] = [None] * len(all_replies)
 
     print("Starting multi-step generations")
 
     for step, task in tqdm(pc.template.items()):
-        print("Starting step ",step)
+        print("Starting step ", step)
 
         # Initialise per-step result columns
-        all_replies[step] = [None]*len(all_replies)
-        all_replies[f"{step}_reply"] = [None]*len(all_replies)
+        all_replies[step] = [None] * len(all_replies)
+        all_replies[f"{step}_reply"] = [None] * len(all_replies)
 
         # Each step is an independent conversation: system prompt, the step's
         # task, its few-shot demonstrations and the post
-        for i,row in all_replies.iterrows():
+        for i, row in all_replies.iterrows():
             if not row["continue"]:
                 continue
-            all_replies.at[i, "prompt"] = pc.construct(row["description"], task, system_prompt=True, step=step)
-
+            all_replies.at[i, "prompt"] = pc.construct(
+                row["description"], task, system_prompt=True, step=step
+            )
 
         # --- Generate answers for all still-active examples ---
         active_mask = all_replies["continue"]
@@ -1001,38 +1135,39 @@ def multi_step_generation(
 
         print(f"Generating answers ({datetime.now()})…")
         generated_answers = lm.generate(
-            active_prompts, max_tokens=config["max_tokens"], thinking_mode=config["thinking_mode"]
+            active_prompts,
+            max_tokens=config["max_tokens"],
+            thinking_mode=config["thinking_mode"],
         )
 
         print(f"Extracting labels from answers {datetime.now()}...")
         y_pred = list(map(read_labels_from_answer, generated_answers))
 
-        for i, pred, answer in zip(active_ids,y_pred, generated_answers):
-            all_replies.loc[i,step] = pred
-            all_replies.loc[i,f"{step}_reply"] = answer
+        for i, pred, answer in zip(active_ids, y_pred, generated_answers):
+            all_replies.loc[i, step] = pred
+            all_replies.loc[i, f"{step}_reply"] = answer
 
         # --- Apply decision logic to determine next action for each example ---
         decision = decisions[step]
 
-        for i,row in all_replies.iterrows():
+        for i, row in all_replies.iterrows():
             pred = row[step]
             if pred is not None:
                 next_action = decision[pred]
                 if next_action == "continue":
-                    all_replies.loc[i,"continue"] = True
+                    all_replies.loc[i, "continue"] = True
                 else:
                     # A definitive label has been reached; stop processing this example
-                    all_replies.loc[i,"continue"] = False
-                    all_replies.loc[i,"predicted_label"] = next_action
+                    all_replies.loc[i, "continue"] = False
+                    all_replies.loc[i, "predicted_label"] = next_action
 
             else:
                 # Ambiguous model output — mark as unresolved and halt
                 if row["continue"]:
-                    print(f"Ambiguous reply at step {step}, row {i}: '{row[f'{step}_reply']}'")
-                    all_replies.loc[i,"continue"] = False
-                    all_replies.loc[i,"predicted_label"] = None
+                    print(
+                        f"Ambiguous reply at step {step}, row {i}: '{row[f'{step}_reply']}'"
+                    )
+                    all_replies.loc[i, "continue"] = False
+                    all_replies.loc[i, "predicted_label"] = None
 
     return all_replies
-
-
-

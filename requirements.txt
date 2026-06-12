@@ -1,0 +1,10 @@
+pandas
+tqdm
+matplotlib
+seaborn
+numpy 
+scikit-learn
+torch
+huggingface_hub
+openai
+python_dotenv

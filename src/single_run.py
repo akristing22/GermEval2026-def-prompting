@@ -117,6 +117,12 @@ def main():
                 print(f"Retrieving demonstrations {datetime.now()}...")
             prompts = [pc.construct(text) for text in tqdm(test["description"])]
 
+            # could be changed to - syncs to util.py/line 1130 then:
+            # prompts = [
+                # pc.construct(text, system_prompt=True)
+                # for text in tqdm(test["description"])
+            # ]
+
             print(f"Classifying {datetime.now()}...")
             generated_answers = lm.generate(
                 prompts,
