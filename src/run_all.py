@@ -68,6 +68,12 @@ DEMONSTRATION_SIZES = [
 N_SPLITS = 4
 
 
+def is_openai_backend(cfg: dict) -> bool:
+    return cfg.get("model_backend") == "openai" or str(
+        cfg["model_name"]
+    ).startswith("gpt-")
+
+
 def get_data_splits(fold: tuple[np.ndarray, np.ndarray], df: pd.DataFrame):
     """Split df into (train, test) using the row indices of one CV fold."""
     return df.loc[fold[0]], df.loc[fold[1]]
@@ -80,6 +86,8 @@ def result_filename(cfg: dict, split: int) -> str:
     None values appear literally as "None".
     """
     model_short = cfg["model_name"].split("/")[-1]
+    if cfg.get("finetune", False):
+        model_short = f"{model_short}-qlora"
     thinking_suffix = "_thinking" if cfg["thinking_mode"] else ""
 
     return (
@@ -101,7 +109,9 @@ def main():
 
     with open("config.yaml") as stream:
         config = yaml.safe_load(stream)
-    config = util.validate_config(config)
+    config = util.validate_config(
+        config, check_model=not is_openai_backend(config)
+    )
 
     # The grid loops below mutate `config` in place, so the per-fold knowledge
     # bases are built from a pristine copy — forced to dynamic mode and sized
@@ -144,7 +154,25 @@ def main():
         else:
             know_base = step_know_base = None  # zero-shot-only grid
 
-        if lm is None:
+        if is_openai_backend(config):
+            if lm is None:
+                print(f"Loading API model ({config['model_name']})...")
+                lm = util.LM_API(
+                    util.API_CONFIG(
+                        model=config["model_name"],
+                        max_output_tokens=config["max_tokens"],
+                    )
+                )
+        elif config.get("finetune", False):
+            if lm is not None:
+                del lm
+                torch.cuda.empty_cache()
+                gc.collect()
+            print(f"Loading fine-tuned model ({config['model_name']})...")
+            from qlora_standalone.qlora_def_minimal import load_finetuned_lm
+
+            lm = load_finetuned_lm(config, train, split)
+        elif lm is None:
             print(f"Loading model ({config['model_name']})...")
             lm = util.LM(config["model_name"])
 
@@ -213,13 +241,10 @@ def main():
                                 # instance (includes retrieval if configured).
                                 if config["embedding_mode"] is not None:
                                     print(f"Retrieving demonstrations {datetime.now()}...")
-                                prompts = [pc.construct(text) for text in tqdm(test["description"])]
-
-                                # could be changed to - syncs to util.py/line 1130 then:
-                                # prompts = [
-                                    # pc.construct(text, system_prompt=True)
-                                    # for text in tqdm(test["description"])
-                                # ]
+                                prompts = [
+                                    pc.construct(text, system_prompt=True)
+                                    for text in tqdm(test["description"])
+                                ]
 
                                 # Re-prime the KV cache for the shared prompt
                                 # prefix before batched generation.

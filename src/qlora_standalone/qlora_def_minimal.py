@@ -22,6 +22,7 @@ import argparse
 import csv
 import json
 import random
+import sys
 from pathlib import Path
 
 import numpy as np
@@ -29,6 +30,7 @@ import pandas as pd
 import torch
 from datasets import Dataset
 from peft import LoraConfig, TaskType, get_peft_model, prepare_model_for_kbit_training
+from peft import PeftModel
 from sklearn.metrics import (
     accuracy_score,
     balanced_accuracy_score,
@@ -47,10 +49,17 @@ from transformers import (
     Trainer,
     TrainingArguments,
 )
+from tqdm import tqdm
+
+SRC_DIR = Path(__file__).resolve().parents[1]
+if str(SRC_DIR) not in sys.path:
+    sys.path.insert(0, str(SRC_DIR))
+
+import util
 
 # Config
 
-DEFAULT_DATA_PATH = Path("data/germeval2026/def/def_train.csv")
+DEFAULT_DATA_PATH = Path("data/def_train.csv")
 DEFAULT_OUTPUT_DIR = Path("outputs/qlora_def_minimal")
 
 ID_COL = "id"
@@ -59,20 +68,17 @@ LABEL_COL = "DEF"
 POS_LABEL = "TRUE"
 NEG_LABEL = "FALSE"
 
-POS_COMPLETION = " JA"
-NEG_COMPLETION = " NEIN"
+POS_COMPLETION = " True"
+NEG_COMPLETION = " False"
 
-PROMPT_TEMPLATE = """### Aufgabe
-Entscheide, ob der folgende Tweet eine strafrechtlich relevante Beleidigung,
-ueble Nachrede oder Verleumdung enthaelt.
-
-Antworte ausschliesslich mit JA oder NEIN.
-
-### Tweet
-{text}
-
-### Antwort
-"""
+DEFAULT_PROMPT_CONFIG = {
+    "prompt_mode": "description",
+    "template_path": "templates",
+    "demonstration_size": 0,
+    "demonstration_mode": None,
+    "embedding_mode": None,
+    "retrieval_mode": None,
+}
 
 
 # Small utilities
@@ -93,15 +99,14 @@ def sniff_sep(path: Path) -> str:
         return ";"
 
 
-def read_def_csv(path: Path) -> pd.DataFrame:
-    frame = pd.read_csv(path, sep=sniff_sep(path), encoding="utf-8-sig")
+def normalize_def_frame(frame: pd.DataFrame) -> pd.DataFrame:
     frame.columns = [str(col).strip() for col in frame.columns]
 
     lower_to_col = {col.lower(): col for col in frame.columns}
     required = {ID_COL.lower(), TEXT_COL.lower(), LABEL_COL.lower()}
     missing = required - set(lower_to_col)
     if missing:
-        raise ValueError(f"Missing columns {sorted(missing)} in {path}")
+        raise ValueError(f"Missing columns {sorted(missing)} in input frame")
 
     frame = frame.rename(
         columns={
@@ -112,15 +117,69 @@ def read_def_csv(path: Path) -> pd.DataFrame:
     )
     frame = frame[[ID_COL, TEXT_COL, LABEL_COL]].copy()
     frame[TEXT_COL] = frame[TEXT_COL].fillna("").astype(str)
-    frame[LABEL_COL] = frame[LABEL_COL].astype(str).str.strip().str.upper()
+
+    if frame[LABEL_COL].dtype == bool:
+        frame[LABEL_COL] = np.where(frame[LABEL_COL], POS_LABEL, NEG_LABEL)
+    else:
+        frame[LABEL_COL] = frame[LABEL_COL].astype(str).str.strip().str.upper()
+
     frame = frame[frame[LABEL_COL].isin([NEG_LABEL, POS_LABEL])].reset_index(drop=True)
     frame["y"] = (frame[LABEL_COL] == POS_LABEL).astype(int)
     return frame
 
 
-def make_instruction_frame(frame: pd.DataFrame) -> pd.DataFrame:
+def read_def_csv(path: Path) -> pd.DataFrame:
+    frame = pd.read_csv(path, sep=sniff_sep(path), encoding="utf-8-sig")
+    return normalize_def_frame(frame)
+
+
+def messages_to_prompt(tokenizer, messages: list[dict[str, str]]) -> str:
+    if getattr(tokenizer, "chat_template", None):
+        return tokenizer.apply_chat_template(
+            messages,
+            tokenize=False,
+            add_generation_prompt=True,
+        )
+    return "\n".join(f"{msg['role']}: {msg['content']}" for msg in messages) + "\nassistant:"
+
+
+def make_prompt_config(config: dict | None) -> dict:
+    prompt_config = {**DEFAULT_PROMPT_CONFIG, **(config or {})}
+    prompt_config["demonstration_size"] = 0
+    prompt_config["demonstration_mode"] = None
+    prompt_config["embedding_mode"] = None
+    prompt_config["retrieval_mode"] = None
+    prompt_config["prompt_mode"] = prompt_config.get(
+        "qlora_prompt_mode", prompt_config["prompt_mode"]
+    )
+    if prompt_config["prompt_mode"] == "explicit":
+        raise ValueError(
+            "QLoRA DEF fine-tuning supports title/description/implicit prompts. "
+            "Explicit mode needs per-step labels and should be trained separately."
+        )
+    return prompt_config
+
+
+def make_instruction_frame(
+    frame: pd.DataFrame, tokenizer=None, config: dict | None = None
+) -> pd.DataFrame:
     out = frame.copy()
-    out["prompt"] = out[TEXT_COL].map(lambda text: PROMPT_TEMPLATE.format(text=text))
+    if tokenizer is None:
+        prompt_config = DEFAULT_PROMPT_CONFIG
+        pc = util.PromptConstructor(None, prompt_config)
+        out["prompt"] = out[TEXT_COL].map(
+            lambda text: "\n".join(
+                msg["content"] for msg in pc.construct(text, system_prompt=True)
+            )
+        )
+    else:
+        prompt_config = make_prompt_config(config)
+        pc = util.PromptConstructor(None, prompt_config)
+        out["prompt"] = out[TEXT_COL].map(
+            lambda text: messages_to_prompt(
+                tokenizer, pc.construct(text, system_prompt=True)
+            )
+        )
     out["completion"] = np.where(out["y"].eq(1), POS_COMPLETION, NEG_COMPLETION)
     return out
 
@@ -211,6 +270,182 @@ def load_qlora_model(model_id: str, gradient_checkpointing: bool):
     model = get_peft_model(model, lora_config)
     model.print_trainable_parameters()
     return model, tokenizer
+
+
+class QLoRALM:
+    """4-bit PEFT adapter inference wrapper with the same generate() shape as util.LM."""
+
+    def __init__(self, model_id: str, adapter_path: str | Path):
+        self.model_name = model_id
+        self.adapter_path = str(adapter_path)
+
+        quant_config = BitsAndBytesConfig(
+            load_in_4bit=True,
+            bnb_4bit_quant_type="nf4",
+            bnb_4bit_use_double_quant=True,
+            bnb_4bit_compute_dtype=torch.float16,
+        )
+        self.tokenizer = AutoTokenizer.from_pretrained(model_id, use_fast=True)
+        if self.tokenizer.pad_token is None:
+            self.tokenizer.pad_token = self.tokenizer.eos_token
+        self.tokenizer.padding_side = "left"
+
+        self.model = AutoModelForCausalLM.from_pretrained(
+            model_id,
+            quantization_config=quant_config,
+            device_map="auto",
+            torch_dtype="auto",
+        )
+        self.model = PeftModel.from_pretrained(self.model, self.adapter_path)
+        self.model.eval()
+
+        chat_template = getattr(self.tokenizer, "chat_template", None) or ""
+        self.thinking_capable = "enable_thinking" in chat_template
+
+    def update_kv_cache(self) -> None:
+        return None
+
+    def generate(
+        self,
+        prompts: list[list[dict[str, str]]],
+        max_tokens: int = 10,
+        thinking_mode: bool = False,
+    ) -> list[str]:
+        outputs = []
+        for prompt in tqdm(
+            prompts, total=len(prompts), mininterval=1.0, dynamic_ncols=True
+        ):
+            if getattr(self.tokenizer, "chat_template", None):
+                template_kwargs = {
+                    "tokenize": True,
+                    "add_generation_prompt": True,
+                    "return_tensors": "pt",
+                    "return_dict": True,
+                }
+                if self.thinking_capable:
+                    template_kwargs["enable_thinking"] = thinking_mode
+
+                inputs = self.tokenizer.apply_chat_template(
+                    prompt,
+                    **template_kwargs,
+                ).to(self.model.device)
+            else:
+                prompt_text = messages_to_prompt(self.tokenizer, prompt)
+                inputs = self.tokenizer(
+                    prompt_text, return_tensors="pt"
+                ).to(self.model.device)
+            input_length = inputs["input_ids"].shape[1]
+            generated_ids = self.model.generate(
+                **inputs,
+                do_sample=False,
+                max_new_tokens=max_tokens,
+                pad_token_id=self.tokenizer.pad_token_id,
+            )
+            new_tokens = generated_ids[:, input_length:]
+            outputs.append(
+                self.tokenizer.decode(new_tokens[0], skip_special_tokens=True)
+            )
+        return outputs
+
+
+def qlora_adapter_path(config: dict, split: int) -> str | None:
+    adapter_path = config.get("qlora_adapter_path")
+    if adapter_path is None:
+        return None
+    return adapter_path.format(split=split, fold=split)
+
+
+def train_qlora_adapter(
+    train_frame: pd.DataFrame,
+    config: dict,
+    output_dir: str | Path,
+    seed: int = 42,
+) -> Path:
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    seed_everything(seed)
+    train_frame = normalize_def_frame(train_frame)
+
+    model_id = config["model_name"]
+    model, tokenizer = load_qlora_model(
+        model_id,
+        gradient_checkpointing=config.get("qlora_gradient_checkpointing", True),
+    )
+    instructions = make_instruction_frame(train_frame, tokenizer=tokenizer, config=config)
+    instructions.to_csv(output_dir / "train_instructions.csv", sep=";", index=False)
+
+    tokenize = build_tokenize_fn(
+        tokenizer, max_length=config.get("qlora_max_length", 512)
+    )
+    train_ds = to_hf_dataset(instructions).map(
+        tokenize, remove_columns=["prompt", "completion"]
+    )
+
+    collator = DataCollatorForSeq2Seq(
+        tokenizer=tokenizer,
+        model=model,
+        label_pad_token_id=-100,
+        pad_to_multiple_of=8,
+    )
+    training_args = TrainingArguments(
+        output_dir=str(output_dir / "checkpoints"),
+        per_device_train_batch_size=config.get("qlora_batch_size", 1),
+        gradient_accumulation_steps=config.get("qlora_grad_accum_steps", 32),
+        num_train_epochs=config.get("qlora_epochs", 3),
+        learning_rate=config.get("qlora_lr", 2e-5),
+        warmup_ratio=config.get("qlora_warmup_ratio", 0.06),
+        weight_decay=config.get("qlora_weight_decay", 0.01),
+        max_grad_norm=0.3,
+        logging_steps=config.get("qlora_logging_steps", 10),
+        save_strategy="epoch",
+        report_to="none",
+        fp16=torch.cuda.is_available(),
+        bf16=False,
+        optim="paged_adamw_8bit",
+        remove_unused_columns=False,
+    )
+    trainer = Trainer(
+        model=model,
+        args=training_args,
+        train_dataset=train_ds,
+        data_collator=collator,
+    )
+    trainer.train()
+
+    adapter_dir = output_dir / "adapter"
+    trainer.model.save_pretrained(adapter_dir)
+    tokenizer.save_pretrained(adapter_dir)
+    del trainer, model
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+    return adapter_dir
+
+
+def resolve_or_train_adapter(
+    train_frame: pd.DataFrame,
+    config: dict,
+    split: int,
+) -> str:
+    adapter_path = qlora_adapter_path(config, split)
+    if adapter_path is not None:
+        return adapter_path
+
+    output_dir = Path(config.get("qlora_output_dir", "outputs/qlora")) / f"fold-{split}"
+    return str(
+        train_qlora_adapter(
+            train_frame,
+            config,
+            output_dir,
+            seed=config.get("qlora_seed", 42),
+        )
+    )
+
+
+def load_finetuned_lm(config: dict, train_frame: pd.DataFrame, split: int) -> QLoRALM:
+    adapter_path = resolve_or_train_adapter(train_frame, config, split)
+    print(f"Loading QLoRA adapter from {adapter_path}...")
+    return QLoRALM(config["model_name"], adapter_path)
 
 
 # Forced-choice evaluation
@@ -328,7 +563,13 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--data_path", type=Path, default=DEFAULT_DATA_PATH)
     parser.add_argument("--output_dir", type=Path, default=DEFAULT_OUTPUT_DIR)
-    parser.add_argument("--model_id", default="LSX-UniWue/LLaMmlein_1B")
+    parser.add_argument("--model_id", default="google/gemma-4-E4B-it")
+    parser.add_argument("--template_path", default="templates")
+    parser.add_argument(
+        "--prompt_mode",
+        default="description",
+        choices=["title", "description", "implicit"],
+    )
     parser.add_argument("--holdout_size", type=float, default=0.2)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--max_length", type=int, default=512)
@@ -350,22 +591,29 @@ def main() -> None:
 
     # Load CSV -> instruction rows -> stratified holdout split.
     raw = read_def_csv(args.data_path)
-    instructions = make_instruction_frame(raw)
-    train_frame, holdout_frame = make_splits(
-        instructions, holdout_size=args.holdout_size, seed=args.seed
-    )
-    train_frame.to_csv(args.output_dir / "train_instructions.csv", sep=";", index=False)
-    holdout_frame.to_csv(
-        args.output_dir / "holdout_instructions.csv", sep=";", index=False
-    )
+    train_raw, holdout_raw = make_splits(raw, holdout_size=args.holdout_size, seed=args.seed)
 
     print("Label distribution:")
     print(raw[LABEL_COL].value_counts())
-    print(f"Train rows: {len(train_frame)} | Holdout rows: {len(holdout_frame)}")
+    print(f"Train rows: {len(train_raw)} | Holdout rows: {len(holdout_raw)}")
 
     # QLoRA model and prompt-masked SFT dataset.
     model, tokenizer = load_qlora_model(
         args.model_id, gradient_checkpointing=args.gradient_checkpointing
+    )
+    prompt_config = {
+        "prompt_mode": args.prompt_mode,
+        "template_path": args.template_path,
+    }
+    train_frame = make_instruction_frame(
+        train_raw, tokenizer=tokenizer, config=prompt_config
+    )
+    holdout_frame = make_instruction_frame(
+        holdout_raw, tokenizer=tokenizer, config=prompt_config
+    )
+    train_frame.to_csv(args.output_dir / "train_instructions.csv", sep=";", index=False)
+    holdout_frame.to_csv(
+        args.output_dir / "holdout_instructions.csv", sep=";", index=False
     )
     tokenize = build_tokenize_fn(tokenizer, max_length=args.max_length)
     train_ds = to_hf_dataset(train_frame).map(

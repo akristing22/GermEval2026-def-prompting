@@ -13,10 +13,12 @@ Requires the HF_TOKEN environment variable for HuggingFace Hub access.
 """
 
 import json
+import gc
 import os
 from datetime import datetime
 
 import pandas as pd
+import torch
 import yaml
 from huggingface_hub import login
 from sklearn.model_selection import StratifiedKFold
@@ -27,6 +29,12 @@ import util
 N_SPLITS = 4
 
 
+def is_openai_backend(cfg: dict) -> bool:
+    return cfg.get("model_backend") == "openai" or str(
+        cfg["model_name"]
+    ).startswith("gpt-")
+
+
 def result_filename(cfg: dict, split: int) -> str:
     """Build the result filename:
     {model}_{prompt}_{demo_mode}_{demo_size}_{embedding}_{retrieval}_fold-N[_thinking].csv
@@ -34,6 +42,8 @@ def result_filename(cfg: dict, split: int) -> str:
     None values appear literally as "None".
     """
     model_short = cfg["model_name"].split("/")[-1]
+    if cfg.get("finetune", False):
+        model_short = f"{model_short}-qlora"
     thinking_suffix = "_thinking" if cfg["thinking_mode"] else ""
 
     return (
@@ -52,7 +62,7 @@ def main():
     with open("config.yaml") as stream:
         config = yaml.safe_load(stream)
     # Normalize incompatible parameter combinations (see validate_config()).
-    config = util.validate_config(config)
+    config = util.validate_config(config, check_model=False)
 
     login(token=os.environ["HF_TOKEN"])
 
@@ -66,8 +76,7 @@ def main():
         for i, (train_index, test_index) in enumerate(skf.split(df["description"], df["DEF"]))
     }
 
-    print("Loading model...")
-    lm = util.LM(config["model_name"])
+    lm = None
 
     for split in tqdm(range(N_SPLITS), desc="Folds"):
         print(f"\nStarting fold {split}")
@@ -81,6 +90,28 @@ def main():
         train_idx, test_idx = folds[split]
         train = df.loc[train_idx]
         test = df.loc[test_idx]
+
+        if is_openai_backend(config):
+            if lm is None:
+                print("Loading API model...")
+                lm = util.LM_API(
+                    util.API_CONFIG(
+                        model=config["model_name"],
+                        max_output_tokens=config["max_tokens"],
+                    )
+                )
+        elif config.get("finetune", False):
+            if lm is not None:
+                del lm
+                torch.cuda.empty_cache()
+                gc.collect()
+            print(f"Loading fine-tuned HF model for fold {split}...")
+            from qlora_standalone.qlora_def_minimal import load_finetuned_lm
+
+            lm = load_finetuned_lm(config, train, split)
+        elif lm is None:
+            print("Loading model...")
+            lm = util.LM(config["model_name"])
 
         # Build the demonstration pool for few-shot prompting; zero-shot runs
         # (demonstration_size == 0) need no knowledge base.
@@ -115,13 +146,10 @@ def main():
             # demonstration retrieval if configured).
             if config["embedding_mode"] is not None:
                 print(f"Retrieving demonstrations {datetime.now()}...")
-            prompts = [pc.construct(text) for text in tqdm(test["description"])]
-
-            # could be changed to - syncs to util.py/line 1130 then:
-            # prompts = [
-                # pc.construct(text, system_prompt=True)
-                # for text in tqdm(test["description"])
-            # ]
+            prompts = [
+                pc.construct(text, system_prompt=True)
+                for text in tqdm(test["description"])
+            ]
 
             print(f"Classifying {datetime.now()}...")
             generated_answers = lm.generate(

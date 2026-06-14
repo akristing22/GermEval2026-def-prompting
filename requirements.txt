@@ -5,6 +5,14 @@ seaborn
 numpy 
 scikit-learn
 torch
+transformers
+accelerate
+bitsandbytes
+datasets
+peft
+langchain-community
+langchain-core
+langchain-huggingface
 huggingface_hub
 openai
 python_dotenv

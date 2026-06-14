@@ -20,6 +20,10 @@ dist/
 # IDE
 .idea/
 .vscode/*.log
+.vscode/*
 
 # Notebooks
 .ipynb_checkpoints/
+
+# custom
+config_backup/*

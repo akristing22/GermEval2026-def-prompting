@@ -84,16 +84,12 @@ def completion_with_backoff(client, **kwargs):
 
 @dataclass
 class API_CONFIG:
-    model: Literal[
-        "gpt-5.5-2026-04-23",
-        "gpt-5.4-2026-03-05",
-        "gpt-5.4-mini-2026-03-17",
-        "gpt-5-2025-08-07",
-        "gpt-4.1-2025-04-14",
-    ] = "gpt-5.5-2026-04-23"
-    temperature: float = 0.8
+    model: str = "gpt-5.5"
+    temperature: float = 0
     max_output_tokens: int = 160
-    reasoning_effort: Literal["none", "low", "medium", "high", "xhigh"] = "medium"
+    reasoning_effort: Literal[
+        "none", "minimal", "low", "medium", "high", "xhigh"
+    ] = "none"
     # top_logprobs (maximum number of tokens to return per position w. probability)
     # top_p (alternative to temperature, filters tokens with top_p probability)
 

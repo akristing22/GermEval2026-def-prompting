@@ -1,0 +1,23 @@
+model_name: google/gemma-4-E4B-it
+embedding_model: codefuse-ai/F2LLM-v2-1.7B
+prompt_mode: description
+demonstration_mode: None
+demonstration_size: 0
+embedding_mode: None
+retrieval_mode: None
+thinking_mode: False
+data_path: /data
+results_path: /results
+template_path: /templates
+max_tokens: 10
+
+finetune: True
+qlora_output_dir: outputs/qlora_gemma4_e4b
+qlora_prompt_mode: description
+qlora_max_length: 512
+qlora_epochs: 3
+qlora_batch_size: 1
+qlora_grad_accum_steps: 32
+qlora_lr: 0.00002
+qlora_gradient_checkpointing: True
+qlora_seed: 42
