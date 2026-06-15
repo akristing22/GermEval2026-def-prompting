@@ -8,6 +8,6 @@ embedding_mode: sparse  #one of sparse, dense, fusion, None
 retrieval_mode : similarity  #one of similarity, diversity, mmr, random, None
 thinking_mode: True  # or False
 data_path: ./data
-results_path: ./results
+results_path: results/
 template_path: ./templates
 max_tokens: 16  # really?!
