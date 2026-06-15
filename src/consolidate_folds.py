@@ -24,14 +24,16 @@ def main():
     # both ends, so this relies on the config name not ending in one of the
     # stripped characters; one spec per file means each config appears four
     # times in the list (once per fold).
-    specs = [s.strip(".csv").strip("_fold-0").strip("_fold-1").strip("_fold-2").strip("_fold-3") for s in file_names]
+    specs = [s.strip(".csv").strip("_fold-0").strip("_fold-1").strip("_fold-2").strip("_fold-3") for s in file_names if "score_table" not in s]
 
-    for spec in tqdm(specs):
+    for spec in tqdm(set(specs)):
         # Collect all fold files belonging to this config via prefix match
         spec_files = [f for f in file_names if f.startswith(spec)]
         dfs = []
         for f in spec_files:
             dfs.append(pd.read_csv(os.path.join(RESULTS_DIR,f)))
+
+        print(len(dfs))
 
         # Concatenate the disjoint test splits into one full-dataset result
         df = pd.concat(dfs,ignore_index=True)
