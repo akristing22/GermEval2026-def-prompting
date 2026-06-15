@@ -6,8 +6,8 @@ four folds of each config are concatenated here into a single CSV (every post
 appears exactly once, since each fold's test split is disjoint) and written to
 {RESULTS_DIR}/consolidated/{config}.csv.
 
-Run from src/; expects the fold files in ../results/final_run/ and the
-subdirectory "consolidated" to exist.
+Run from src/; expects the fold files in ../results/final_run/. The
+subdirectory "consolidated" is created automatically if it does not exist.
 """
 
 import pandas as pd
@@ -25,6 +25,10 @@ def main():
     # stripped characters; one spec per file means each config appears four
     # times in the list (once per fold).
     specs = [s.strip(".csv").strip("_fold-0").strip("_fold-1").strip("_fold-2").strip("_fold-3") for s in file_names if "score_table" not in s]
+
+    consolidated_dir = os.path.join(RESULTS_DIR, "consolidated")
+    if not os.path.exists(consolidated_dir):
+        os.makedirs(consolidated_dir)
 
     for spec in tqdm(set(specs)):
         # Collect all fold files belonging to this config via prefix match
