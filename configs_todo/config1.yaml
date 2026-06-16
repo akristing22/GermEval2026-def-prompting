@@ -1,13 +1,13 @@
 model_backend: openai
-model_name: gpt-5.5-2026-04-23 # the API model name
+model_name: gpt-5.5-2026-04-23  # API mode name here
 embedding_model: codefuse-ai/F2LLM-v2-1.7B
-prompt_mode: title  # one of title, description, implicit, explicit
-demonstration_mode: None  # one of dynamic, static, None
+prompt_mode: title #one of title, description, implicit, explicit
+demonstration_mode: None #one of dynamic, static, None
 demonstration_size: 0
 embedding_mode: None  #one of sparse, dense, fusion, None
-retrieval_mode : None  #one of similarity, diversity, mmr, random, None
+retrieval_mode : None #one of similarity, diversity, mmr, random, None
 thinking_mode: False
 data_path: ./data
-results_path: ./results
+results_path: results/
 template_path: ./templates
-max_tokens: 16  # really?! >= 16 for openai
+max_tokens: 16

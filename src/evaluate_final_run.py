@@ -139,11 +139,13 @@ def main():
     folds_table.to_csv(folds_path, index=False)
     print(f"{len(folds_table)} rows written to {folds_path}\n")
 
+    """
     print(f"Scoring consolidated results in {CONSOLIDATED_DIR}...")
     consolidated_table = build_score_table(CONSOLIDATED_DIR, with_fold=False)
     consolidated_path = os.path.join(RESULTS_DIR, "score_table_consolidated.csv")
     consolidated_table.to_csv(consolidated_path, index=False)
     print(f"{len(consolidated_table)} rows written to {consolidated_path}\n")
+    """
 
     print("Top configurations by consolidated F1 Macro:")
     print(consolidated_table[CONFIG_COLUMNS + ["f1_macro"]].head(10).to_string(index=False))

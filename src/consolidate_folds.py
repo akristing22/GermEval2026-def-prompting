@@ -19,6 +19,7 @@ RESULTS_DIR = "../results/final_run/"
 def main():
 
     file_names = [f for f in os.listdir(RESULTS_DIR) if f.endswith(".csv")]
+    print("file names: \n ", file_names)
     # Derive the config name by cutting ".csv" and the fold suffix off each
     # filename. Note: str.strip() removes *characters* (not substrings) from
     # both ends, so this relies on the config name not ending in one of the
@@ -29,10 +30,13 @@ def main():
     for spec in tqdm(specs):
         # Collect all fold files belonging to this config via prefix match
         spec_files = [f for f in file_names if f.startswith(spec)]
+
         dfs = []
         for f in spec_files:
             dfs.append(pd.read_csv(os.path.join(RESULTS_DIR,f)))
+            print(f)
 
+        print(len(dfs))
         # Concatenate the disjoint test splits into one full-dataset result
         df = pd.concat(dfs,ignore_index=True)
 

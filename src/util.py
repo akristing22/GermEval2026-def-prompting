@@ -85,7 +85,7 @@ def completion_with_backoff(client, **kwargs):
 @dataclass
 class API_CONFIG:
     model: str = "gpt-5.5"
-    temperature: float = 0
+    # temperature: float = 0
     max_output_tokens: int = 160
     reasoning_effort: Literal[
         "none", "minimal", "low", "medium", "high", "xhigh"
@@ -142,7 +142,7 @@ class LM_API:
                 "model": self.config.model,
                 "input": input_messages,
                 "max_output_tokens": max_tokens,
-                "temperature": self.config.temperature if do_sample else 0,
+                # "temperature": self.config.temperature if do_sample else 0,
             }
 
             if instructions is not None:
