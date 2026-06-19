@@ -251,6 +251,13 @@ def load_qlora_model(model_id: str, gradient_checkpointing: bool):
         model.gradient_checkpointing_enable()
 
     model = prepare_model_for_kbit_training(model)
+    lora_kwargs = {}
+    if getattr(model.config, "model_type", None) == "gemma4":
+        # Gemma 4's vision/audio projections are wrapped in
+        # Gemma4ClippableLinear, which PEFT cannot replace. The language-model
+        # projections use supported linear layers and are the only ones needed
+        # for this text classification task.
+        lora_kwargs["exclude_modules"] = r".*\.(vision_tower|audio_tower)\..*"
     lora_config = LoraConfig(
         task_type=TaskType.CAUSAL_LM,
         r=16,
@@ -266,6 +273,7 @@ def load_qlora_model(model_id: str, gradient_checkpointing: bool):
             "up_proj",
             "down_proj",
         ],
+        **lora_kwargs,
     )
     model = get_peft_model(model, lora_config)
     model.print_trainable_parameters()
@@ -432,6 +440,10 @@ def resolve_or_train_adapter(
         return adapter_path
 
     output_dir = Path(config.get("qlora_output_dir", "outputs/qlora")) / f"fold-{split}"
+    adapter_dir = output_dir / "adapter"
+    if (adapter_dir / "adapter_config.json").exists():
+        return str(adapter_dir)
+
     return str(
         train_qlora_adapter(
             train_frame,

@@ -77,6 +77,8 @@ def main():
     }
 
     lm = None
+    kb = None
+    pc = None
 
     for split in tqdm(range(N_SPLITS), desc="Folds"):
         print(f"\nStarting fold {split}")
@@ -101,10 +103,11 @@ def main():
                     )
                 )
         elif config.get("finetune", False):
-            if lm is not None:
-                del lm
-                torch.cuda.empty_cache()
-                gc.collect()
+            lm = None
+            kb = None
+            pc = None
+            gc.collect()
+            torch.cuda.empty_cache()
             print(f"Loading fine-tuned HF model for fold {split}...")
             from qlora_standalone.qlora_def_minimal import load_finetuned_lm
 
@@ -171,6 +174,15 @@ def main():
             }).to_csv(output_path, index=False)
 
         print(f"Results saved to {output_path}")
+
+        # Fine-tuned models and retrieval embeddings are re-created per fold.
+        # Release both before the next fold loads another quantized Gemma model.
+        pc = None
+        kb = None
+        if config.get("finetune", False):
+            lm = None
+        gc.collect()
+        torch.cuda.empty_cache()
 
 
 if __name__ == "__main__":

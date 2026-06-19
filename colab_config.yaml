@@ -1,19 +1,21 @@
 model_name: google/gemma-4-E4B-it
 prompt_mode: implicit
-demonstration_mode: None
+demonstration_mode: null
 demonstration_size: 0
-embedding_mode: None
-retrieval_mode: None
+embedding_mode: null
+retrieval_mode: null
 thinking_mode: False
 data_path: ./data
 results_path: results
 template_path: ./templates
+embedding_model: codefuse-ai/F2LLM-v2-1.7B
 max_tokens: 10
 
+
 finetune: True
-qlora_output_dir: outputs/qlora_gemma4_e4b
+qlora_output_dir: /content/drive/MyDrive/germeval/qlora_gemma4_e4b
 qlora_prompt_mode: implicit
-qlora_max_length: 512
+qlora_max_length: 1024
 qlora_epochs: 3
 qlora_batch_size: 1
 qlora_grad_accum_steps: 32
