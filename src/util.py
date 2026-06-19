@@ -434,7 +434,7 @@ class KnowledgeBase:
             self.retriever_non_hate.k = self.demonstration_size // 2
         if self.embedding_model is None:
             self.embedding_model = HuggingFaceEmbeddings(
-                model_name=config["embedding_model"], model_kwargs={"device": "cuda"}
+                model_name=config["embedding_model"], model_kwargs={"device": "cpu"}
             )
 
     def build(self, data: list[str], labels: list[bool]):
