@@ -49,12 +49,10 @@ Implementation and Colab notes:
   `/content/drive/MyDrive/germeval/qlora_gemma4_e4b`, because `/content` is
   deleted when the runtime ends.
 
-### API Inference: in progress
+### API Inference: completed
 
-- fill LM_API class (or adapt LM class) for API calls
-- settings to run in configs_todo
-- 4-fold CV
-- run both unedited settings
+- Implemented OpenAI Responses API inference through `LM_API`
+- Completed stratified 4-fold CV for both configurations
 
 Report: 
 - unedited did not work:
@@ -63,3 +61,9 @@ Report:
   - retrieval mode and 
   - allow for at least 16 tokens (OpenAI minimum)
 - ran config 1 + config 2 as documented in the config.yaml
+
+Artifacts:
+
+- Config 1 fold predictions and scores: `results/config1_run/`
+- Config 2 fold predictions: `results/config2_run/`
+- Run configurations: `results/gpt_configs_run1_run2.yaml`

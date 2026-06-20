@@ -16,3 +16,4 @@ langchain-huggingface
 huggingface_hub
 openai
 python_dotenv
+rank-bm25
