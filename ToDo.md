@@ -67,3 +67,10 @@ Artifacts:
 - Config 1 fold predictions and scores: `results/config1_run/`
 - Config 2 fold predictions: `results/config2_run/`
 - Run configurations: `results/gpt_configs_run1_run2.yaml`
+
+## TODO Inference: 
+- run all gemma adapters w. majority vote on the test data split
+
+## Paper 
+- Sektionen: 4.3.1.-4.3.3
+- 
