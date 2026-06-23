@@ -32,6 +32,7 @@ MODEL_STYLE = {
 def plot_f1_by_demo_size(df: pd.DataFrame, name: str) -> None:
     fig, ax = plt.subplots(figsize=(4, 3), constrained_layout=True)
 
+    per_model_means = {}
     for model in MODEL_LABELS:
         model_data = df[df["model"] == model]
         if model_data.empty:
@@ -47,6 +48,7 @@ def plot_f1_by_demo_size(df: pd.DataFrame, name: str) -> None:
 
         if means.empty:
             continue
+        per_model_means[model] = means
         ax.plot(
             means.index,
             means.values,
@@ -61,6 +63,28 @@ def plot_f1_by_demo_size(df: pd.DataFrame, name: str) -> None:
             means.values[-1] + y_nudge,
             MODEL_LABELS[model],
             color=style["color"],
+            fontsize=10,
+            va="center",
+        )
+
+    if per_model_means:
+        mean_across_models = (
+            pd.DataFrame(per_model_means).mean(axis=1).reindex(DEMO_SIZES).dropna()
+        )
+        ax.plot(
+            mean_across_models.index,
+            mean_across_models.values,
+            color="black",
+            marker="o",
+            markersize=5,
+            linewidth=1.6,
+            linestyle="--",
+        )
+        ax.text(
+            mean_across_models.index[-1] + 0.5,
+            mean_across_models.values[-1],
+            "Mean",
+            color="black",
             fontsize=10,
             va="center",
         )

@@ -14,7 +14,8 @@ import pandas as pd
 import os
 from tqdm import tqdm
 
-RESULTS_DIR = "../results/final_run/"
+RESULTS_DIR = "../results/ablations/static"
+CONSOLIDATED_DIR = os.path.join(RESULTS_DIR,"consolidated")
 
 def main():
 
@@ -26,9 +27,8 @@ def main():
     # times in the list (once per fold).
     specs = [s.strip(".csv").strip("_fold-0").strip("_fold-1").strip("_fold-2").strip("_fold-3") for s in file_names if "score_table" not in s]
 
-    consolidated_dir = os.path.join(RESULTS_DIR, "consolidated")
-    if not os.path.exists(consolidated_dir):
-        os.makedirs(consolidated_dir)
+    if not os.path.exists(CONSOLIDATED_DIR):
+        os.makedirs(CONSOLIDATED_DIR)
 
     for spec in tqdm(set(specs)):
         # Collect all fold files belonging to this config via prefix match
@@ -42,7 +42,9 @@ def main():
         # Concatenate the disjoint test splits into one full-dataset result
         df = pd.concat(dfs,ignore_index=True)
 
-        df.to_csv(os.path.join(RESULTS_DIR,"consolidated",spec+".csv"),index=False)
+        df.to_csv(os.path.join(CONSOLIDATED_DIR,
+                               spec+".csv"
+                               ),index=False)
 
 if __name__ == "__main__":
     main()

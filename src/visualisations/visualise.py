@@ -23,6 +23,23 @@ import numpy as np
 import pandas as pd
 import seaborn as sns
 
+_RETRIEVAL_CONFIG_MAP = {
+    ("None",   "None"):       "Zero-Shot",
+    ("None",   "random"):     "Random",
+    ("dense",  "similarity"): "Similarity (Dense)",
+    ("sparse", "similarity"): "Similarity (Sparse)",
+    ("fusion", "similarity"): "Similarity (Fusion)",
+    ("dense",  "diversity"):  "Diversity (Dense)",
+    ("dense",  "mmr"):        "MMR (Dense)",
+}
+
+PROMPT_MARKERS = {
+    "Title":       "o",
+    "Description": "s",
+    "Implicit":    "^",
+    "Explicit":    "D",
+}
+
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from model_colors import get_model_colors, MODEL_LABELS
 from common import (
@@ -40,7 +57,7 @@ SPEC_DIMS = [
     "emb_mode", "retrieval_mode"
 ]
 DIM_LABELS = [
-    "Model", "Prompt mode", "Demo. size",
+    "Model", "Conditioning", "Demo. size",
     "Embed. mode", "Retrieval"
 ]
 
@@ -59,103 +76,6 @@ def load_scores(score_table_path: str = SCORE_TABLE) -> pd.DataFrame:
     scores = load_consolidated_scores(score_table_path)
     return scores[SPEC_DIMS + ["f1_macro"]]
 
-
-# ---------------------------------------------------------------------------
-# 1. Specification curve
-# ---------------------------------------------------------------------------
-
-def plot_specification_curve(scores: pd.DataFrame) -> None:
-    """
-    Specification curve (Simonsohn et al. 2020 convention):
-    - Top panel  : F1 Macro values sorted ascending, one dot per configuration.
-    - Bottom panel: dot grid — filled dot = that choice was active for each spec.
-    """
-    df = scores.sort_values("f1_macro").reset_index(drop=True)
-    n = len(df)
-
-    def _order(vals: list) -> list:
-        """Sort categories; push 'None' and 'False' to the end."""
-        vals = [str(v) for v in vals]
-        tail = [v for v in ("False", "None") if v in vals]
-        rest = sorted(v for v in vals if v not in tail)
-        return rest + tail
-
-    dim_cats = {d: _order(df[d].unique()) for d in SPEC_DIMS}
-    n_rows   = sum(len(v) for v in dim_cats.values())
-
-    ROW_H  = 0.30
-    fig_h  = 4.0 + n_rows * ROW_H
-    fig_w  = max(10.0, n * 0.35)
-
-    fig = plt.figure(figsize=(fig_w, fig_h))
-    gs  = gridspec.GridSpec(2, 1, height_ratios=[4.0, n_rows * ROW_H], hspace=0.04)
-    ax_t = fig.add_subplot(gs[0])
-    ax_b = fig.add_subplot(gs[1], sharex=ax_t)
-
-    # ── top panel ─────────────────────────────────────────────────────────────
-    xs = np.arange(n)
-    ax_t.plot(xs, df["f1_macro"], color=ACCENT, lw=1.5, zorder=2)
-    ax_t.scatter(xs, df["f1_macro"], color=ACCENT, s=22, zorder=3)
-    ax_t.axhline(0.64, color="grey", ls="--", lw=0.8, alpha=0.7, label="KNN baseline (0.64)")
-    ax_t.set_ylabel("F1 Macro", fontsize=11)
-    ax_t.set_title("Specification Curve — F1 Macro across prompting strategy configurations",
-                   fontsize=12, pad=8)
-    ax_t.set_ylim(0, 1.0)
-    ax_t.legend(fontsize=8, loc="upper left", frameon=False)
-    ax_t.tick_params(bottom=False, labelbottom=False)
-    ax_t.spines[["top", "right"]].set_visible(False)
-
-    # ── bottom panel ──────────────────────────────────────────────────────────
-    ax_b.set_xlim(-0.5, n - 0.5)
-
-    y          = 0
-    ytick_pos  = []
-    ytick_lbls = []
-    group_mids = []         # (mid data-y, dim label)
-    separators = []         # data-y positions of group boundaries
-
-    for dim, dim_label in zip(SPEC_DIMS, DIM_LABELS):
-        cats    = dim_cats[dim]
-        y_start = y
-        for cat in cats:
-            active = df[dim].astype(str) == cat
-            # inactive outline dots
-            ax_b.scatter(xs, [y] * n,
-                         color="none", edgecolors=GREY, s=14, lw=0.6, zorder=1)
-            # filled active dots
-            ax_b.scatter(xs[active], [y] * int(active.sum()),
-                         color=ACCENT, s=14, zorder=2)
-            ytick_pos.append(y)
-            ytick_lbls.append(f"  {cat}")
-            y += 1
-        group_mids.append(((y_start + y - 1) / 2, dim_label))
-        separators.append(y - 0.5)
-
-    ax_b.set_yticks(ytick_pos)
-    ax_b.set_yticklabels(ytick_lbls, fontsize=7)
-    ax_b.set_ylim(-0.5, y - 0.5)
-    ax_b.invert_yaxis()
-    ax_b.set_xlabel("Specification (sorted by F1 Macro)", fontsize=10)
-    ax_b.tick_params(left=True, bottom=False, labelbottom=False, length=0)
-    ax_b.spines[["top", "right", "bottom", "left"]].set_visible(False)
-
-    for sep in separators[:-1]:
-        ax_b.axhline(sep, color="#e0e0e0", lw=0.8)
-
-    # dimension group labels on the right edge
-    # with invert_yaxis: axes frac 1 = data y=-0.5, frac 0 = data y=y-0.5
-    total = y
-    for mid_y, dlabel in group_mids:
-        frac_y = 1.0 - (mid_y + 0.5) / total
-        ax_b.annotate(
-            dlabel,
-            xy=(1.0, frac_y), xycoords="axes fraction",
-            xytext=(5, 0), textcoords="offset points",
-            fontsize=8, fontweight="bold", va="center", ha="left",
-        )
-
-    save_figure(fig, FIGURES_DIR, "specification_curve")
-    plt.close(fig)
 
 
 # ---------------------------------------------------------------------------
@@ -176,8 +96,8 @@ def plot_heatmap(scores: pd.DataFrame) -> None:
         linewidths=0.5, linecolor="#eeeeee",
         cbar_kws={"label": "F1 Macro", "shrink": 0.8},
     )
-    ax.set_title("Mean F1 Macro — Model × Prompt mode", fontsize=12, pad=10)
-    ax.set_xlabel("Prompt mode", fontsize=10)
+    ax.set_title("Mean F1 Macro — Model × Conditioning", fontsize=12, pad=10)
+    ax.set_xlabel("Conditioning", fontsize=10)
     ax.set_ylabel("Model", fontsize=10)
     ax.tick_params(axis="x", rotation=0)
     ax.tick_params(axis="y", rotation=0)
@@ -192,25 +112,31 @@ def plot_heatmap(scores: pd.DataFrame) -> None:
 
 def plot_violin_by_retrieval(scores: pd.DataFrame) -> None:
     """
-    F1 Macro distribution per retrieval_mode, sorted by group mean.
-    Falls back to a strip plot when any group has fewer than 3 observations
-    (too few points for a meaningful violin shape).
-    Points are coloured by model.
+    F1 Macro distribution per retrieval configuration (embedding mode + retrieval mode
+    combined), sorted by group mean. Points are coloured by model and shaped by
+    prompt_mode. Falls back to a box plot when any group has fewer than 3 observations.
     """
     df = scores.copy()
-    df["retrieval_mode"] = df["retrieval_mode"].astype(str)
+    df["retrieval_config"] = df.apply(
+        lambda r: _RETRIEVAL_CONFIG_MAP.get(
+            (r["emb_mode"], r["retrieval_mode"]),
+            f"{r['retrieval_mode']} ({r['emb_mode']})",
+        ),
+        axis=1,
+    )
+    df["prompt_mode"] = df["prompt_mode"].str.capitalize()
 
-    # sort violins by mean F1 ascending
-    means = df.groupby("retrieval_mode")["f1_macro"].mean().sort_values()
+    means = df.groupby("retrieval_config")["f1_macro"].mean().sort_values()
     order = means.index.tolist()
+    x_idx = {v: i for i, v in enumerate(order)}
 
-    min_group = df.groupby("retrieval_mode")["f1_macro"].count().min()
+    min_group = df.groupby("retrieval_config")["f1_macro"].count().min()
 
-    fig, ax = plt.subplots(figsize=(max(6, len(order) * 1.8), 5))
+    fig, ax = plt.subplots(figsize=(max(8, len(order) * 1.8), 5))
 
     if min_group >= 3:
         sns.violinplot(
-            data=df, x="retrieval_mode", y="f1_macro", hue="retrieval_mode",
+            data=df, x="retrieval_config", y="f1_macro", hue="retrieval_config",
             order=order, ax=ax,
             palette="Blues", inner=None, linewidth=1.2, cut=0, legend=False,
         )
@@ -220,34 +146,55 @@ def plot_violin_by_retrieval(scores: pd.DataFrame) -> None:
             poly.set_linewidth(1.2)
     else:
         sns.boxplot(
-            data=df, x="retrieval_mode", y="f1_macro",
+            data=df, x="retrieval_config", y="f1_macro",
             order=order, ax=ax,
             palette="Blues", linewidth=1.2,
         )
 
     models = sorted(df["model"].unique())
     model_palette = get_model_colors(models)
+    prompt_modes_present = [p for p in PROMPT_MARKERS if p in df["prompt_mode"].unique()]
 
-    sns.stripplot(
-        data=df, x="retrieval_mode", y="f1_macro", hue="model",
-        order=order, hue_order=models, ax=ax,
-        palette=model_palette, size=5, alpha=0.85, jitter=True, dodge=False,
-    )
+    rng = np.random.default_rng(42)
+    for prompt in prompt_modes_present:
+        for model in models:
+            sub = df[(df["prompt_mode"] == prompt) & (df["model"] == model)]
+            if sub.empty:
+                continue
+            xs = sub["retrieval_config"].map(x_idx).values.astype(float)
+            xs += rng.uniform(-0.15, 0.15, size=len(sub))
+            ax.scatter(
+                xs, sub["f1_macro"].values,
+                color=model_palette[model],
+                marker=PROMPT_MARKERS[prompt],
+                s=25, alpha=0.85, zorder=3,
+            )
 
     chance_line = ax.axhline(0.64, color="grey", ls="--", lw=0.8, alpha=0.7)
 
-    # legend: model colours + chance line
-    handles, labels = ax.get_legend_handles_labels()
-    labels = [MODELS[label] for label in labels]
-    handles.append(chance_line)
-    labels.append("KNN baseline (0.64)")
-    ax.legend(handles, labels, fontsize=8, loc="lower right", frameon=False,
-              title="Model", title_fontsize=8)
-    
-    ax.set_xticklabels(["zero-shot" if lbl.get_text() == "None" else lbl.get_text()
-                        for lbl in ax.get_xticklabels()])
-    ax.set_title("F1 Macro by Retrieval Mode", fontsize=12, pad=8)
-    ax.set_xlabel("Retrieval mode", fontsize=10)
+    model_handles = [
+        plt.Line2D([0], [0], marker="o", color="w",
+                   markerfacecolor=model_palette[m], markersize=7,
+                   label=MODELS.get(m, m))
+        for m in models
+    ]
+    shape_handles = [
+        plt.Line2D([0], [0], marker=PROMPT_MARKERS[p], color="w",
+                   markerfacecolor="#555555", markeredgecolor="#555555",
+                   markersize=7, label=p)
+        for p in prompt_modes_present
+    ]
+    chance_handle = plt.Line2D([0], [0], color="grey", ls="--", lw=0.8,
+                               label="KNN baseline (0.64)")
+    ax.legend(
+        handles=model_handles + shape_handles + [chance_handle],
+        fontsize=8, loc="lower right", frameon=False,
+        title="Model / Conditioning", title_fontsize=8,
+    )
+
+    ax.tick_params(axis="x", rotation=15)
+    ax.set_title("F1 Macro by Retrieval Configuration", fontsize=12, pad=8)
+    ax.set_xlabel("Retrieval configuration", fontsize=10)
     ax.set_ylabel("F1 Macro", fontsize=10)
     ax.set_ylim(0.1, 0.9)
     ax.spines[["top", "right"]].set_visible(False)
@@ -316,8 +263,8 @@ def plot_violin_by_prompt(scores: pd.DataFrame) -> None:
     
     ax.set_xticklabels(["zero-shot" if lbl.get_text() == "None" else lbl.get_text()
                         for lbl in ax.get_xticklabels()])
-    ax.set_title("F1 Macro by Prompt Mode", fontsize=12, pad=8)
-    ax.set_xlabel("Prompt mode", fontsize=10)
+    ax.set_title("F1 Macro by Conditioning", fontsize=12, pad=8)
+    ax.set_xlabel("Conditioning", fontsize=10)
     ax.set_ylabel("F1 Macro", fontsize=10)
     ax.set_ylim(0.1, 0.9)
     ax.spines[["top", "right"]].set_visible(False)
@@ -337,7 +284,6 @@ def main(score_table_path: str = SCORE_TABLE) -> None:
     print(scores[SPEC_DIMS + ["f1_macro"]].to_string(index=False))
     print()
 
-    plot_specification_curve(scores)
     plot_heatmap(scores)
     plot_violin_by_retrieval(scores)
     plot_violin_by_prompt(scores)

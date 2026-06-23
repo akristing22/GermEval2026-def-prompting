@@ -25,14 +25,15 @@ import pandas as pd
 import seaborn as sns
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from spec_graph_f1 import load_fold_scores
 from common import (
     FINAL_RUN_FIGURES_DIR as FIGURES_DIR,
     MEASURE,
     SCORE_TABLE_FOLDS,
+    SCORE_TABLE_CONSOLIDATED,
     save_figure,
+    load_consolidated_scores,
 )
-from model_colors import get_model_colors
+from model_colors import get_model_colors, MODEL_LABELS
 
 # ---------------------------------------------------------------------------
 # Config
@@ -40,7 +41,7 @@ from model_colors import get_model_colors
 AXES = ["prompt_mode", "demo_size", "emb_mode", "retrieval_mode"]
 
 AXIS_LABELS = {
-    "prompt_mode":    "Prompt mode",
+    "prompt_mode":    "Conditioning",
     "demo_size":      "Demo size",
     "emb_mode":       "Embedding",
     "retrieval_mode": "Retrieval",
@@ -124,7 +125,7 @@ def plot_tornado(impact_df: pd.DataFrame, models: list[str], name: str) -> None:
             ax.tick_params(axis="y", length=0)
         # if idx // ncols == nrows - 1:
         #     ax.set_xlabel("F1 range  (max mean − min mean)", fontsize=8)
-        ax.set_title(model, fontsize=9, fontweight="bold")
+        ax.set_title(MODEL_LABELS.get(model, model), fontsize=9, fontweight="bold")
         ax.set_xlim(0, x_max)
         ax.spines[["top", "right"]].set_visible(False)
         ax.tick_params(axis="x", labelsize=8)
@@ -135,9 +136,9 @@ def plot_tornado(impact_df: pd.DataFrame, models: list[str], name: str) -> None:
     for idx in range(len(models), len(axes_flat)):
         axes_flat[idx].set_visible(False)
 
-    fig.suptitle("Sensitivity to each configuration axis\n"
-                 "F1 Macro range across axis values (marginal means)",
-                 fontsize=11, fontweight="bold")
+    #fig.suptitle("Sensitivity to each configuration axis\n"
+    #             "F1 Macro range across axis values (marginal means)",
+    #             fontsize=11, fontweight="bold")
     plt.tight_layout(rect=[0, 0, 1, 0.93])
     save_figure(fig, FIGURES_DIR, name)
     plt.close(fig)
@@ -155,28 +156,29 @@ def plot_heatmap(impact_df: pd.DataFrame, models: list[str], name: str) -> None:
         .reindex(index=models, columns=AXES)
     )
     pivot.columns = [AXIS_LABELS[c] for c in pivot.columns]
+    pivot.index = [MODEL_LABELS.get(m, m) for m in pivot.index]
 
     fig, ax = plt.subplots(figsize=(len(AXES) * 1.9 + 1.2, len(models) * 1.1 + 1.2))
     sns.heatmap(
         pivot,
         ax=ax,
         annot=True,
-        fmt=".3f",
+        fmt=".2f",
         cmap="YlOrRd",
         linewidths=0.5,
         linecolor="white",
-        cbar_kws={"label": "F1 range  (impact)", "shrink": 0.7},
-        annot_kws={"fontsize": 10},
+        cbar=False,
+        annot_kws={"fontsize": 18},
     )
     ax.set_xlabel("")
     ax.set_ylabel("")
-    ax.tick_params(axis="x", labelsize=10)
-    ax.tick_params(axis="y", labelsize=9, rotation=0)
-    ax.set_title(
-        "Impact of each configuration axis on F1 Macro\n"
-        "(range of per-value marginal means, per model)",
-        fontsize=11, fontweight="bold", pad=12,
-    )
+    ax.tick_params(axis="x", labelsize=18)
+    ax.tick_params(axis="y", labelsize=18, rotation=0)
+    # ax.set_title(
+    #     "Impact of each configuration axis on F1 Macro\n"
+    #     "(range of per-value marginal means, per model)",
+    #     fontsize=11, fontweight="bold", pad=12,
+    # )
     plt.tight_layout()
     save_figure(fig, FIGURES_DIR, name)
     plt.close(fig)
@@ -187,8 +189,8 @@ def plot_heatmap(impact_df: pd.DataFrame, models: list[str], name: str) -> None:
 # ---------------------------------------------------------------------------
 
 def main() -> None:
-    print(f"Loading scores from: {SCORE_TABLE_FOLDS}")
-    df = load_fold_scores()
+    print(f"Loading scores from: {SCORE_TABLE_CONSOLIDATED}")
+    df = load_consolidated_scores()
     print(f"  {len(df)} fold entries across {df['model'].nunique()} models")
 
     models = sorted(df["model"].unique())

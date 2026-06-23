@@ -22,14 +22,20 @@ import os
 import re
 
 import pandas as pd
-from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score
+from sklearn.metrics import (
+    accuracy_score,
+    cohen_kappa_score,
+    f1_score,
+    precision_score,
+    recall_score,
+)
 
-RESULTS_DIR = "../results/final_run"
+RESULTS_DIR = "../results/ablations/static"
 CONSOLIDATED_DIR = os.path.join(RESULTS_DIR, "consolidated")
 
 CONFIG_COLUMNS = ["model", "prompt_mode", "demo_mode", "demo_size",
                   "embedding_mode", "retrieval_mode", "thinking_mode"]
-METRIC_COLUMNS = ["n_scored", "n_abstained", "accuracy", "f1_macro",
+METRIC_COLUMNS = ["n_scored", "n_abstained", "accuracy", "f1_macro", "cohen_kappa",
                   "precision_true", "recall_true", "precision_false", "recall_false"]
 
 
@@ -88,6 +94,7 @@ def score_file(path: str) -> dict:
         "n_abstained": int((~mask).sum()),
         "accuracy": round(accuracy_score(y_true, y_pred), 4),
         "f1_macro": round(f1_score(y_true, y_pred, average="macro"), 4),
+        "cohen_kappa": round(cohen_kappa_score(y_true, y_pred), 4),
         "precision_true": round(precision_score(y_true, y_pred, pos_label=True, zero_division=0), 4),
         "recall_true": round(recall_score(y_true, y_pred, pos_label=True, zero_division=0), 4),
         "precision_false": round(precision_score(y_true, y_pred, pos_label=False, zero_division=0), 4),
@@ -133,11 +140,11 @@ def build_score_table(directory: str, with_fold: bool) -> pd.DataFrame:
 
 
 def main():
-    print(f"Scoring per-fold results in {RESULTS_DIR}...")
-    folds_table = build_score_table(RESULTS_DIR, with_fold=True)
-    folds_path = os.path.join(RESULTS_DIR, "score_table_folds.csv")
-    folds_table.to_csv(folds_path, index=False)
-    print(f"{len(folds_table)} rows written to {folds_path}\n")
+    #print(f"Scoring per-fold results in {RESULTS_DIR}...")
+    #folds_table = build_score_table(RESULTS_DIR, with_fold=True)
+    #folds_path = os.path.join(RESULTS_DIR, "score_table_folds.csv")
+    #folds_table.to_csv(folds_path, index=False)
+    #print(f"{len(folds_table)} rows written to {folds_path}\n")
 
     print(f"Scoring consolidated results in {CONSOLIDATED_DIR}...")
     consolidated_table = build_score_table(CONSOLIDATED_DIR, with_fold=False)

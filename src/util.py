@@ -20,6 +20,7 @@ import numpy as np
 import pandas as pd
 import torch
 import yaml
+import math
 from huggingface_hub import repo_exists
 from langchain_community.retrievers import BM25Retriever
 from langchain_core.documents import Document
@@ -66,7 +67,7 @@ class LM:
     batch-size estimation from available GPU memory, and OOM recovery.
     """
 
-    def __init__(self,repo_id:str):
+    def __init__(self,repo_id:str,quantisation:bool=False):
         """
         Load a model from the HuggingFace Hub and estimate the maximum
         number of KV-cache tokens that fit in free GPU memory.
@@ -76,19 +77,27 @@ class LM:
         """
 
         self.model_name = repo_id
-        self.load()
+        self.load(quantisation)
         self.update_kv_cache()
 
 
-    def load(self):
+    def load(self,quantisation):
         """Load the model and tokenizer from HuggingFace Hub onto available devices."""
 
-        self.model = AutoModelForCausalLM.from_pretrained(
-            self.model_name,
-            low_cpu_mem_usage=True,
-            device_map='auto',
-            #quantization_config=BitsAndBytesConfig(load_in_8bit=True),
-            )
+        if quantisation:
+            self.model = AutoModelForCausalLM.from_pretrained(
+                self.model_name,
+                low_cpu_mem_usage=True,
+                device_map='auto',
+                quantization_config=BitsAndBytesConfig(load_in_8bit=True),
+                )
+        else:
+            self.model = AutoModelForCausalLM.from_pretrained(
+                self.model_name,
+                low_cpu_mem_usage=True,
+                device_map='auto',
+                )
+
         self.tokenizer = AutoTokenizer.from_pretrained(
             self.model_name,
             low_cpu_mem_usage=True,
@@ -326,6 +335,7 @@ class KnowledgeBase:
         self.demonstration_size = config["demonstration_size"]
         self.demonstration_mode = config["demonstration_mode"]
         self.retrieval_mode = config["retrieval_mode"]
+        self.prompt_mode = config["prompt_mode"]
         # Keep the BM25 retrievers in sync with a changed demonstration size
         # (the diversity clusters stay fixed at their build-time size)
         if getattr(self, "built", False):
@@ -406,87 +416,106 @@ class KnowledgeBase:
             self.built = True
 
         elif self.demonstration_mode == "static":
-            # TODO: implement a search routine to find the best-performing static demonstrations
-            pass
 
-    def retrieve_dense(self, query:str, label:bool) -> dict[str, bool]:
+            if self.prompt_mode == "title":
+
+                self.static_demonstrations = {'heil hitler du nuttensohn':True,'merkel muß weg ! sonst ist Deutschland ...unsere Heimat verloren ! Was diese hirnverbrannte schon angerichtet hat ist icht mehr hinnehmbar....warten bis zur nächsten Bundestagswahl ...da kann alles zu spät sein ....Das Ausmaß dieser katastrophalen Asyl Politik ist jetzt schon nicht mehr überschaubar . Gott sei uns gnädig !':False,'Hat ein Neger das Recht soetwas zu sagen ..also bitte wo sind wir denn gelandet..':True,'@DirkderKaiser @IQ_Stimulator 1933 hat man das mit den Juden gemacht, dass zeigt das die deutschen aus der Geschichte nichts gelernt haben! Wann öffnet Dachau wieder?😡😡😡':True,'@tagesschau Öffentlich-rechtlichen Nazi Medien und Merkel Vasallen setzten ihre Hetzkampagne gegen den Präsidenten der Vereinigten Staaten fort!!':True,'@IQ_Stimulator @krippmarie So ein Mist aber auch...da kämpft die Jugendkammer mit allen Mitteln ihn doch nach Jugendstrafrecht zu verurteilen und da kommt der dämliche Vater und ruiniert alles...😃😃😃':False,'Deutschland gehört uns und nicht den Schmarotzerflüchtlingen die unser Land mit ihrem Anwesen hier verpesten, Kohle mehr erhalten  als Hartz IV Empfänger, unsere Güter die von unseren Steuergeldern bezahlt werden zerstören und den Müll aus den Etagen einfach runterballern, Bürger des Deutschen Staates beleidigen, schlagen und noch in Youtube einstellen. Dieses ganze primitive Affenvolk gehört wieder dahin geschickt wo sie hergekommen sind. Aber nicht in Fliegern sondern so wie sie hergekommen sind. In diesem Sinne ......':True,'Lara Schmid ,falsch sie meinten bildung ist wenns keine einbildung ist sie klugscheißerin. stecken sie ihren hals wieder in ihr refugeesdreckloch in münchen wo sie gerade rausgekommen sind. sie sind hier nicht welcome und bei den meisten münchener sicher auch nicht':True}
+
+            elif self.prompt_mode == "implicit":
+
+                self.static_demonstrations = {'Ja mein Freund,denn Pegida wird wachsen ! Deine Rechnerei kannste den Weihnachtsmann vorgaukeln. Ich bin heilfroh das es endlich mal gegen die bescheuerte Politik geht.Ich brauche keine Moscheen und auch keinen Islam,denn ich bin Deutscher und das will ich bleiben! Alles klar!':False,'Gott seid ihr blöd... #pegidioten':False,'Wer sich fragt warum immer wieder ein Neuaufguss von Auschwitz und Co kommt.... frei nach dem Motto... deine Vorfahren waren ganz böse.... usw. in Japan erforscht man das... Ausrottung der Deutschen hier einige Beispiele von unseren tollen Politikern....   ... interessant, wer hier in Deutschland Politik macht und sich auch noch dafür vom deutschen Volk bezahlen lässt! ACHTUNG ... manches hier kann zu Übelkeit führen!\r\nZitate:\r\nJoschka Fischer: „Deutschland ist ein Problem, weil die Deutschen fleißiger, disziplinierter und begabter als der Rest Europas sind. Das wird immer wieder zu ‘Ungleichgewichten’ führen. Dem kann aber gegengesteuert werden, indem so viel Geld wie nur möglich aus Deutschland herausgeleitet wird. Es ist vollkommen egal wofür, es kann auch radikal verschwendet werden – Hauptsache, die Deutschen haben es nicht. Schon ist die Welt gerettet.“\r\nCem Özdemir, derzeit Bundesvorsitzender der Partei “Bündnis 90/ Die Grünen” im Bundestag mit deutschem Pass, in einem Interview mit dem „Tagesspiegel“ auf die Frage; wie er sich die Zukunft vorstellt?\r\n„In Zwanzig Jahren haben wir eine Grüne Bundeskanzlerin und ich berate die türkische Regierung bei der Frage, wie sie ihre Probleme mit der deutschen Minderheit an der Mittelmeerküste in den Griff bekommt.“\r\nJürgen Trittin, Grüner Vorsitzender und ehemaliger Umweltminister: „Noch nie habe ich die deutsche Nationalhymne mitgesungen und ich werde es als Minister auch nicht tun.“ (Quelle: FAZ vom 02. 01. 2005)\r\nNochmals Joschka Fischer, Bündnis 90/ Die Grünen: „Deutschland muss von außen eingehegt und von innen durch Zustrom von Ausländern heterogenisiert, quasi verdünnt, werden.“ (Rezension zu Joschka Fischers Buch „Risiko Deutschland” - von Miriam Lau)\r\n“Deutschland verschwindet jeden Tag immer mehr, und das finde ich einfach großartig.” Jürgen Trittin,\r\n„Deutsche sind ‚Nicht-Migranten‘ - mehr nicht! …die Türkei ist zweite Heimat für mich, ich mache seit 20 Jahren Türkei-Politik.“ (Videoquelle) Claudia Roth, Vorstand Bündnis 90 / Die Grünen und Dt. Bundestagsabgeordnete\r\nSinngemäße Aussage von Cem Özdemir, Bündnis 90 / Die Grünen, auf Behauptung von Susanne Zeller-Hirzel, der letzten Überlebende der Weißen Rose, einer Widerstandsgruppe im sog. Dritten Reich: „Wir wollen, dass Deutschland islamisch wird!“ (Videoquelle)\r\nM. Walid Nakschbandi, “Deutscher Staatsbürger” afghanischer Herkunft und Geschäftsführer der Fernsehproduktionsfirma AVE: „Wir kennen Euren inneren Zustand. Dafür haben wir einen Blick und die nötige Sensibilität. Und da wir Euch kennen, werden wir uns auf Euch nicht mehr verlassen. Wir gehen unseren Weg und der ist schmerzlich und voller Dornen, aber am Ende erfolgreich… . Ihr habt nur die Chance, mit uns zu leben. Ein Leben ohne uns wird es für Euch nicht mehr geben. Die Ibrahims, Stefanos, Marios, Laylas und Sorayas sind deutsche Realität.... . Ihr werdet es nicht verhindern können, dass bald ein türkisch stämmiger Richter über Euch das Urteil fällt, ein pakistanischer Arzt Eure Krankheiten heilt, ein Tamile im Parlament Eure Gesetze mit verabschiedet…. Nicht Ihr werdet die Gesellschaft modernisieren… und humanisieren, sondern wir werden es tun für Euch! - Ihr seid bei diesem leidvollen Prozess lediglich Zaungäste, lästige Gaffer! Wir werden die deutsche Gesellschaft in Ost und West verändern!“\r\nDer Vorstand von “Bündnis 90 / Die Grünen” kürzlich in München: „Es geht nicht um Recht oder Unrecht in der Einwanderungsdebatte, uns geht es zuerst um die Zurückdrängung des deutschen Bevölkerungsanteils in diesem Land!“\r\n“Das Problem ist nicht Sarrazin selbst als Person, sondern der gleichgesinnte Bevölkerungsanteil in Deutschland. ” Cem Özdemir, Bündnis 90 /Die Grünen, (Sarrazin hat bis zu 90% Zustimmung in der Bevölkerung.)\r\n“Der deutsche Nachwuchs heißt jetzt Mustafa, Giovanni und Ali!”\r\nCem Özdemir, Bündnis 90/ Die Grünen auf dem Parteitag der Grünen 1998 in Bonn-Bad Godesberg.\r\n“Am Nationalfeiertag der Deutschen ertrinken die Straßen in einem Meer aus roten Türkenflaggen und ein paar schwarzrotgoldenen Fahnen.”\r\nClaudia Roth, Bündnis 90/ Die Grünen, Wunschvision zum Tag der Deutschen Einheit, Artikel in der Welt am Sonntag vom 6.Februar 2005.\r\n“Deutsche sind Nicht-Migranten, mehr nicht!”\r\nClaudia Roth, Bündnis 90/ Die Grünen\r\n“Ich wollte, dass Frankreich bis zur Elbe reicht und Polen direkt an Frankreich grenzt.”- Sieglinde Frieß, Bündnis 90/ Die Grünen vor dem Parlament im Bundestag, (Quelle: FAZ vom 6.9.1989)\r\n“Migration ist in Frankfurt eine Tatsache. Wenn Ihnen das nicht passt, müssen Sie woanders hinziehen.” (Antwort auf die Beschwerde zu Integrationsproblemen von 50 Anwohnern) - Nargess Eskandari-Grünberg, Bündnis90/Die Grünen, in der Frankfurter Rundschau vom 13. November 2007. Augenzeugen sagen, es hieß wörtlich “…dann wandern Sie doch aus!”\r\nSinngemäß: "Wir, die Grünen, müssen dafür sorgen, so viele Ausländer wie möglich nach Deutschland zu holen. Wenn sie in Deutschland sind, müssen wir für ihr Wahlrecht kämpfen. Wenn wir das erreicht haben, werden wir den Stimmenanteil haben, den wir brauchen, um diese Republik zu verändern." Daniel Cohn-Bendit, Bündnis 90/ Die Grünen\r\n“Deutsche Helden müsste die Welt, tollwütigen Hunden gleich, einfach totschlagen.” Joschka Fischer, Bündnis 90/ Die Grünen\r\n“Es geht nicht um Recht oder Unrecht in der Einwanderungsdebatte, uns geht es zuerst um die Zurückdrängung des deutschen Bevölkerungsanteils in diesem Land.” Vorstand der Bündnis 90/ Die Grünen von München."  https://www.youtube.com/watch?v=te_NpUvM8R8':False,'http://www.presseportal.de/blaulicht/pm/19027/3178920 wieder Rudelangriff von Merkels Neudeutschen auf junge Frau':False,'@krippmarie Einweisen ...dafür gibt’s die geschlossenen... |LBR| Und den der diese alte hübsch findet oder gar erotisch....ebenfalls..! |LBR| @SawsanChebli ....im Land ihresgleichen bestimmt der Renner...😃😃':False,'NTV ist genau wie ARD und ZDF Rot Grün versifft anstatt AFD Politiker zu Wort kommen lassen werden unaufhörlich Linke u Grüne zitiert |LBR| AFD':False, 'Bemitleidenswerte Kreaturen':True,'Ja, da gehören doch eigentlich Flüchtinge hin! Man ist doch so für die Buntheit! Wobei es natürlich keine Menschen sein dürfen, die aufgrund ihres Glaubens und ihrer Kultur vielleicht einen allzu kritischen Blick auf die viel beschworenen "Werte" des links-liberalen Westens werfen könnten ...':False}
+        
+
+
+
+    def retrieve_dense(self, query:str, label:bool, k:int=None) -> dict[str, bool]:
         """
-        Retrieve demonstration_size // 2 examples of one class from the dense
-        index, using the configured retrieval_mode (similarity, mmr, or diversity).
+        Retrieve k examples of one class from the dense index, using the
+        configured retrieval_mode (similarity, mmr, or diversity).
+        k defaults to demonstration_size // 2.
         """
+        k = k if k is not None else self.demonstration_size // 2
         class_filter = lambda doc: doc.metadata.get("label") == label
 
         if self.retrieval_mode == "similarity":
             closest_docs = self.vector_store.similarity_search(
                 query,
-                k=self.demonstration_size//2,
+                k=k,
                 filter=class_filter
                 )
             return {doc.page_content.strip():label for doc in closest_docs}
         elif self.retrieval_mode == "mmr":
             closest_docs = self.vector_store.max_marginal_relevance_search(
                 query,
-                k=self.demonstration_size//2,
-                fetch_k=self.demonstration_size*2,
+                k=k,
+                fetch_k=k*4,
                 filter=class_filter
                 )
             return {doc.page_content.strip():label for doc in closest_docs}
         elif self.retrieval_mode == "diversity":
-            # One randomly drawn example per KMeans cluster of this class
+            # One randomly drawn example per KMeans cluster of this class;
+            # clusters are fixed at build time (demonstration_size//2), so k
+            # is respected up to the number of clusters available
             clustering = self.cluster_hate if label else self.cluster_non_hate
             docs = {}
 
             for cluster in list(clustering.values()):
                 docs[random.choice(cluster)] = label
+                if len(docs) == k:
+                    break
 
             return docs
 
 
-    def retrieve_sparse(self, query:str, label:bool) -> dict[str, bool]:
+    def retrieve_sparse(self, query:str, label:bool, k:int=None) -> dict[str, bool]:
         """Retrieve the top BM25 matches from the given class's own retriever."""
         retriever = self.retriever_hate if label else self.retriever_non_hate
+        if k is not None:
+            retriever.k = k
         closest_docs = retriever.invoke(query)
         return {doc.page_content.strip():label for doc in closest_docs}
 
 
-    def retrieve(self, query: str, label: bool) -> dict[str, bool]:
+    def retrieve(self, query: str, label: bool, k:int=None) -> dict[str, bool]:
         """
-        Retrieve the demonstration_size // 2 most relevant examples of one class,
-        dispatching to dense, sparse, or fusion retrieval per the config.
+        Retrieve k examples of one class, dispatching to dense, sparse, or
+        fusion retrieval per the config. k defaults to demonstration_size // 2.
 
         Args:
             query: The input text to find similar examples for.
             label: Class label to filter by (True = prosecutable).
+            k:     Number of examples to retrieve. Defaults to demonstration_size // 2.
 
         Returns:
             Dict mapping retrieved text → label.
         """
+        k = k if k is not None else self.demonstration_size // 2
 
         if self.embedding_mode == "dense":
-            return self.retrieve_dense(query,label)
+            return self.retrieve_dense(query,label,k)
 
         elif self.embedding_mode == "sparse":
-            return self.retrieve_sparse(query,label)
+            return self.retrieve_sparse(query,label,k)
 
         elif self.embedding_mode == "fusion":
-            # Alternate between dense and sparse results until k/2 examples
+            # Alternate between dense and sparse results until k examples
             # are collected; the dict deduplicates texts found by both
-            dense_demos = self.retrieve_dense(query,label)
-            sparse_demos = self.retrieve_sparse(query,label)
+            dense_demos = self.retrieve_dense(query,label,k)
+            sparse_demos = self.retrieve_sparse(query,label,k)
 
             demos = {}
             for dense_demo, sparse_demo in zip(dense_demos.keys(),sparse_demos.keys()):
                 demos[dense_demo] = label
-                if len(demos) == self.demonstration_size//2:
+                if len(demos) == k:
                     break
                 demos[sparse_demo] = label
-                if len(demos) == self.demonstration_size//2:
+                if len(demos) == k:
                     break
 
             return demos
 
 
-    def query(self, query: str, demonstration_mode) -> dict[str, bool]:
+    def query(self, query: str, demonstration_mode, ratio:dict=None) -> dict[str, bool]:
         """
         Return a class-balanced set of demonstration examples (both classes).
 
@@ -498,6 +527,16 @@ class KnowledgeBase:
             Dict mapping example text → label, with equal representation of each class.
         """
 
+        if ratio is not None:
+            num_pos = ratio["pos"]
+            num_neg = ratio["neg"]
+        else:
+            num_pos = self.demonstration_size//2
+            num_neg = self.demonstration_size//2
+
+        assert num_pos+num_neg == self.demonstration_size, "Number of neg/pos demos does not add up to set demonstration size"
+
+
         if demonstration_mode == "dynamic" and not self.built:
             # The index structures are missing when the knowledge base was
             # constructed under a non-dynamic config — build them now
@@ -506,7 +545,7 @@ class KnowledgeBase:
 
         if demonstration_mode == "dynamic" and self.retrieval_mode != "random":
             # Retrieve the most relevant examples from each class
-            return self.retrieve(query,False) | self.retrieve(query,True)
+            return self.retrieve(query,False,num_neg) | self.retrieve(query,True,num_pos)
 
         elif self.retrieval_mode == "random":
             # Sample an equal number of examples from each class, ignoring the query
@@ -514,9 +553,9 @@ class KnowledgeBase:
             positives = [doc for doc in self.documents if doc.metadata["label"]]
             return (
                 {doc.page_content.strip(): doc.metadata["label"]
-                 for doc in random.sample(negatives, self.demonstration_size//2)}
+                 for doc in random.sample(negatives, num_neg)}
                 | {doc.page_content.strip(): doc.metadata["label"]
-                   for doc in random.sample(positives, self.demonstration_size//2)}
+                   for doc in random.sample(positives, num_pos)}
             )
 
         elif demonstration_mode == "static":
@@ -715,7 +754,8 @@ class PromptConstructor:
             text,
             task,
             demonstrations=None,
-            system_prompt=False
+            system_prompt=False,
+            order:str="random"
             ) -> list[dict[str,str]]:
         """
         Assemble a list of chat messages for a single classification example.
@@ -744,7 +784,13 @@ class PromptConstructor:
 
         if demonstrations is not None:
             demo_list = list(demonstrations.items())
-            random.shuffle(demo_list) # Randomise order to avoid position bias
+            if order == "random":
+                random.shuffle(demo_list) # Randomise order to avoid position bias
+            elif order == "true_first":
+                demo_list.sort(key=lambda x: x[1], reverse=True)
+            elif order == "true_last":
+                demo_list.sort(key=lambda x: x[1])
+
             for demo_text, label in demo_list:
                 messages.append({"role": "user", "content": demo_text})
                 messages.append({"role": "assistant", "content": "True" if label else "False"})
@@ -758,7 +804,9 @@ class PromptConstructor:
             text: str,
             task:str | None=None,
             system_prompt: bool =False,
-            step: str | None=None
+            step: str | None=None,
+            order : str = "random",
+            ratio : dict = None
             ) -> list[dict[str,str]]:
 
         """
@@ -784,10 +832,10 @@ class PromptConstructor:
             if step is not None:
                 demonstrations = self.knowledge_base.query(text, self.demonstration_mode, step=step)
             else:
-                demonstrations = self.knowledge_base.query(text, self.demonstration_mode)
+                demonstrations = self.knowledge_base.query(text, self.demonstration_mode,ratio=ratio)
         else:
             demonstrations = None
-        return self.create_message(text, task, demonstrations, system_prompt=system_prompt)
+        return self.create_message(text, task, demonstrations, system_prompt=system_prompt, order=order)
 
 
 
@@ -827,13 +875,16 @@ def validate_config(config:dict, check_model:bool=True) -> dict:
             f"Model '{config['model_name']}' does not exist on the HuggingFace Hub."
         )
 
+    for key in config.keys():
+        if config[key] == "None":
+            config[key] = None
 
     # --- Parameter range / allowed-value checks ---
     assert config["max_tokens"] > 0, "max_tokens must be a positive integer."
     assert config["thinking_mode"] in (True, False)
-    assert config["embedding_mode"] in ("dense", "sparse", "fusion", None)
+    assert config["embedding_mode"] in ("dense", "sparse", "fusion", None, None)
     assert config["prompt_mode"] in ("title", "description", "implicit", "explicit")
-    assert config["demonstration_mode"] in ("dynamic", "static", None)
+    assert config["demonstration_mode"] in ("dynamic", "static", None, None)
     assert config["demonstration_size"] >= 0
     assert config["retrieval_mode"] in ("similarity", "diversity", "mmr", "random", None)
 
@@ -936,7 +987,8 @@ def multi_step_generation(
         test:pd.DataFrame,
         lm:LM,
         pc:PromptConstructor,
-        config:dict
+        config:dict,
+        order:str="random",
         ) -> pd.DataFrame:
     """
     Run the multi-step ('explicit') classification pipeline over the test set.
@@ -988,7 +1040,7 @@ def multi_step_generation(
         for i,row in all_replies.iterrows():
             if not row["continue"]:
                 continue
-            all_replies.at[i, "prompt"] = pc.construct(row["description"], task, system_prompt=True, step=step)
+            all_replies.at[i, "prompt"] = pc.construct(row["description"], task, system_prompt=True, step=step,order=order)
 
 
         # --- Generate answers for all still-active examples ---

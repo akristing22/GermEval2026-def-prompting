@@ -8,7 +8,7 @@ Adapted from specification_graph.py (another project) for this research project.
 Dimensions shown in spec grid: model, prompt_mode, demo_size, embedding_mode, retrieval_mode.
 Color-coded by model.
 
-Output: results/final_run/figures/spec_curve_f1_boxplot.{pdf,svg} (+ variants)
+Output: results/final_run/figures/spec_curve_f1.{pdf,svg} (+ variants)
 """
 import os
 import sys
@@ -46,7 +46,7 @@ SPEC_ORDER = {
 }
 COL_LABEL = {
     #"model":         "Model",
-    "prompt_mode":      "Prompt",
+    "prompt_mode":      "Conditioning",
     "retrieval_config": "Retrieval",
 }
 
@@ -60,12 +60,12 @@ _RETRIEVAL_CONFIG_MAP = {
     ("dense",   "mmr"):        "MMR (Dense)",
 }
 
-FIGURE_HEIGHT = 5.5
+FIGURE_HEIGHT = 4.4
 CURVE_TICK_FS  = 8
-SPEC_LABEL_FS  = 8
-SPEC_HEAD_FS   = 9
-MARKER_SIZE    = 9
-MARKER_EW      = 3
+SPEC_LABEL_FS  = 7
+SPEC_HEAD_FS   = 8
+MARKER_SIZE    = 8
+MARKER_EW      = 2.5
 AXIS_LABEL_FS  = 9
 
 
@@ -139,7 +139,7 @@ def _plot_column(ax_curve, ax_specs, agg, plot_df, method_colors, model_colors,
 
     # ── bottom panel: spec indicator grid ────────────────────────────────────
     y_pos = {}
-    base_y, y_off = 1, 0.8
+    base_y, y_off = 1, 0.62
     minor_ys, minor_lbls = [], []
     major_ys, major_lbls = [], []
 
@@ -149,9 +149,9 @@ def _plot_column(ax_curve, ax_specs, agg, plot_df, method_colors, model_colors,
             y_pos[(var, str(val))] = base_y + k * y_off
             minor_ys.append(base_y + k * y_off)
             minor_lbls.append(str(val))
-        major_ys.append(base_y + (k + 0.7) * y_off)
+        major_ys.append(base_y + (k + 0.9) * y_off)
         major_lbls.append(COL_LABEL.get(var, var))
-        base_y += len(cats) + 1
+        base_y += len(cats) * y_off + 0.95
 
     # draw markers
     for j in range(len(agg)):
@@ -200,7 +200,7 @@ def _build_figure(plot_df, group_cols, color_col, title, name, model_lines=True)
         .groupby(group_cols, dropna=False)[MEASURE]
         .mean()
         .reset_index()
-        .sort_values(MEASURE, ascending=False)
+        .sort_values(MEASURE, ascending=True)
         .reset_index(drop=True)
     )
 
@@ -218,7 +218,7 @@ def _build_figure(plot_df, group_cols, color_col, title, name, model_lines=True)
     n = len(agg)
     fig_w = max(10, n * 0.01 + 3)
     fig = plt.figure(figsize=(fig_w, FIGURE_HEIGHT))
-    gs  = fig.add_gridspec(2, 1, height_ratios=[1.5, 2.2], hspace=0.03)
+    gs  = fig.add_gridspec(2, 1, height_ratios=[1.0, 1.9], hspace=0.03)
     ax_curve = fig.add_subplot(gs[0], axes_class=axislines.Axes)
     ax_specs = fig.add_subplot(gs[1], axes_class=axislines.Axes, sharex=ax_curve)
 
@@ -237,13 +237,15 @@ def _build_figure(plot_df, group_cols, color_col, title, name, model_lines=True)
     ]
     handles.append(baseline)
     handles[-1].set_label("KNN baseline (0.64)")
-    ax_curve.legend(handles=handles, 
-                    #title="Model", 
-                    loc="lower left",
-                    fontsize=7, title_fontsize=7, framealpha=0.8)
+    ax_curve.legend(handles=handles,
+                    #title="Model",
+                    loc="lower right",
+                    ncol=2,
+                    fontsize=7, title_fontsize=7, framealpha=0.8,
+                    columnspacing=1.0, handletextpad=0.5)
 
-    fig.suptitle(title, fontsize=10, fontweight="bold", y=0.99)
-    plt.subplots_adjust(top=0.95)
+    #fig.suptitle(title, fontsize=10, fontweight="bold", y=0.99)
+    plt.subplots_adjust(top=0.93, bottom=0.04)
     save_figure(fig, FIGURES_DIR, name)
     plt.close(fig)
 
@@ -261,7 +263,7 @@ def main():
         group_cols=group_cols_full,
         color_col="model",
         title="Specification Curve — F1 Macro (mean across folds)",
-        name="spec_curve_f1_boxplot",
+        name="spec_curve_f1",
     )
 
     # Figure 2: model excluded from spec dimensions — dots per model, colored by model
@@ -272,7 +274,7 @@ def main():
         group_cols=group_cols_no_model,
         color_col="model",
         title="Specification Curve — F1 Macro (all models, mean across folds)",
-        name="spec_curve_f1_boxplot_nomodel",
+        name="spec_curve_f1_nomodel",
         model_lines=False,
     )
 
@@ -287,7 +289,7 @@ def main():
             group_cols=group_cols_no_model,
             color_col="model",
             title=f"Specification Curve — {model_name} — F1 Macro (mean across folds)",
-            name=f"spec_curve_f1_boxplot_{safe_name}",
+            name=f"spec_curve_f1_{safe_name}",
         )
 
 

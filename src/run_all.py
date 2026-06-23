@@ -128,19 +128,28 @@ def main():
 
     lm = None  # loaded lazily after the first fold's knowledge bases are built
 
-    for split in tqdm(range(N_SPLITS), desc="Splits"):
+    for split in tqdm(range(3,N_SPLITS), desc="Splits"):
         print(f"Starting with split {split}")
         train, test = get_data_splits(folds[split], df)
 
         # Retrieval stores are built once per fold from the train split only,
         # then reconfigured per grid combination via update_config().
         if max(DEMONSTRATION_SIZES) > 0:
-            know_base = util.KnowledgeBase(train["description"], train["DEF"], kb_config)
-            # Per-step knowledge base for explicit mode, restricted to the current
-            # train split; reuses the embedding model to avoid loading it twice.
-            step_know_base = util.MultiStepKnowledgeBase(
-                annotations, train["id"], kb_config, embedding_model=know_base.embedding_model
-            )
+            if "implicit" in PROMPT_MODES or "title" in PROMPT_MODES or "description" in PROMPT_MODES:
+                know_base = util.KnowledgeBase(train["description"], train["DEF"], kb_config)
+            else:
+                know_base = None
+            if "explicit" in PROMPT_MODES:
+                # Per-step knowledge base for explicit mode, restricted to the current
+                # train split; reuses the embedding model to avoid loading it twice.
+                if know_base is not None:
+                    step_know_base = util.MultiStepKnowledgeBase(
+                        annotations, train["id"], kb_config, embedding_model=know_base.embedding_model
+                    )
+                else:
+                    step_know_base = util.MultiStepKnowledgeBase(annotations,train["id"],kb_config)
+            else:
+                step_know_base = None
         else:
             know_base = step_know_base = None  # zero-shot-only grid
 
@@ -238,6 +247,11 @@ def main():
                                     "prompt": [json.dumps(p, ensure_ascii=False) for p in prompts],
                                 }).to_csv(output_path, index=False)
                                 print(f"Results saved to {output_path}")
+        del know_base
+        del step_know_base
+        del lm
+        gc.collect()
+        lm = None
 
 
 if __name__ == "__main__":
