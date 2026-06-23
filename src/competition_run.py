@@ -1,13 +1,7 @@
 """Single competition run using the settings in config.yaml.
 
 Runs the config.yaml prompting-strategy configuration (prompt_mode,
-demonstration_mode/size, embedding_mode, retrieval_mode, thinking_mode) under
-stratified 4-fold cross-validation (random_state=42) and writes one result CSV
-per fold to {results_path} using the standard result filename format with a
-_fold-N suffix.
-
-For the full grid over all valid combinations under 4-fold CV, use
-run_all.py instead.
+demonstration_mode/size, embedding_mode, retrieval_mode, thinking_mode) and writes one result CSV.
 
 Requires the HF_TOKEN environment variable for HuggingFace Hub access.
 """
@@ -27,7 +21,7 @@ import util
 
 def result_filename(cfg: dict) -> str:
     """Build the result filename:
-    {model}_{prompt}_{demo_mode}_{demo_size}_{embedding}_{retrieval}_fold-N[_thinking].csv
+    {model}_{prompt}_{demo_mode}_{demo_size}_{embedding}_{retrieval}[_thinking].csv
 
     None values appear literally as "None".
     """
