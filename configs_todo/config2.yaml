@@ -7,7 +7,8 @@ demonstration_size: 8
 embedding_mode: dense #one of sparse, dense, fusion, None
 retrieval_mode: similarity #one of similarity, diversity, mmr, random, None
 thinking_mode: False
+reasoning_effort: none
 data_path: /data
 results_path: /results
 template_path: /templates
-max_tokens: 16
+max_tokens: 128
