@@ -14,9 +14,8 @@ Requires the HF_TOKEN environment variable for HuggingFace Hub access.
 """
 
 import gc
-import json
 import os
-from datetime import datetime
+from itertools import product
 
 import numpy as np
 import pandas as pd
@@ -49,9 +48,9 @@ RETRIEVAL_MODES = [
 ]
 
 PROMPT_MODES = [
-    # "title",
-    # "description",
-    # "implicit",
+    "title",
+    "description",
+    "implicit",
     "explicit",
 ]
 
@@ -61,7 +60,7 @@ DEMONSTRATION_MODES = [
 ]
 
 DEMONSTRATION_SIZES = [
-    # 0,  # zero-shot
+    0,  # zero-shot
     8,
 ]
 
@@ -145,12 +144,20 @@ def main():
         # Retrieval stores are built once per fold from the train split only,
         # then reconfigured per grid combination via update_config().
         if max(DEMONSTRATION_SIZES) > 0:
-            know_base = util.KnowledgeBase(train["description"], train["DEF"], kb_config)
-            # Per-step knowledge base for explicit mode, restricted to the current
-            # train split; reuses the embedding model to avoid loading it twice.
-            step_know_base = util.MultiStepKnowledgeBase(
-                annotations, train["id"], kb_config, embedding_model=know_base.embedding_model
-            )
+            if any(mode in PROMPT_MODES for mode in ("title", "description", "implicit")):
+                know_base = util.KnowledgeBase(train["description"], train["DEF"], kb_config)
+            else:
+                know_base = None
+            if "explicit" in PROMPT_MODES:
+                # Per-step knowledge base for explicit mode, restricted to the
+                # current train split; reuses the embedding model (if already
+                # loaded) to avoid loading it twice.
+                embedding_model = know_base.embedding_model if know_base is not None else None
+                step_know_base = util.MultiStepKnowledgeBase(
+                    annotations, train["id"], kb_config, embedding_model=embedding_model
+                )
+            else:
+                step_know_base = None
         else:
             know_base = step_know_base = None  # zero-shot-only grid
 
@@ -176,99 +183,109 @@ def main():
             print(f"Loading model ({config['model_name']})...")
             lm = util.LM(config["model_name"])
 
-        for demo_size in DEMONSTRATION_SIZES:
+        for demo_size, demo_mode, embedding_mode, retrieval_mode, prompt_mode in product(
+            DEMONSTRATION_SIZES, DEMONSTRATION_MODES, EMBEDDING_MODES,
+            RETRIEVAL_MODES, PROMPT_MODES,
+        ):
             config["demonstration_size"] = demo_size
+            config["demonstration_mode"] = demo_mode
+            config["embedding_mode"] = embedding_mode
+            config["retrieval_mode"] = retrieval_mode
+            config["prompt_mode"] = prompt_mode
 
-            for demo_mode in DEMONSTRATION_MODES:
-                config["demonstration_mode"] = demo_mode
+            if demo_size != 0:
+                # Explicit mode retrieves demonstrations per step from its
+                # own knowledge base.
+                kb = step_know_base if prompt_mode == "explicit" else know_base
+            else:
+                kb = None  # zero-shot: no demonstrations needed
 
-                for embedding_mode in EMBEDDING_MODES:
-                    config["embedding_mode"] = embedding_mode
+            # Skip combinations that validate_config() would rewrite: only the
+            # canonical form of each config is executed, which deduplicates
+            # the grid.
+            if config != util.validate_config(config.copy(), check_model=False):
+                continue
 
-                    for retrieval_mode in RETRIEVAL_MODES:
-                        config["retrieval_mode"] = retrieval_mode
+            if kb is not None:
+                kb.update_config(config)
 
-                        for prompt_mode in PROMPT_MODES:
-                            config["prompt_mode"] = prompt_mode
+            # Resume support: skip configs that already have a result file
+            # from a previous (partial) run.
+            output_filename = util.result_filename(config, split)
+            output_path = os.path.join(config["results_path"], "final_run", output_filename)
+            if os.path.exists(output_path):
+                print(f"Results for config {output_filename} already exist, skipping...")
+                continue
 
-                            if demo_size != 0:
-                                # Explicit mode retrieves demonstrations per
-                                # step from its own knowledge base.
-                                kb = step_know_base if prompt_mode == "explicit" else know_base
-                            else:
-                                kb = None  # zero-shot: no demonstrations needed
+            print(f"Running config: {output_filename.removesuffix('.csv')}")
 
-                            # Skip combinations that validate_config() would
-                            # rewrite: only the canonical form of each config
-                            # is executed, which deduplicates the grid.
-                            if config != util.validate_config(config.copy(), check_model=False):
-                                continue
+            pc = util.PromptConstructor(kb, config)
 
-                            if kb is not None:
-                                kb.update_config(config)
+            if config["prompt_mode"] == "explicit":
+                # Multi-step pipeline: one inference call per legal decision
+                # step, with early stopping per explicit_decisions.yaml.
+                results = util.multi_step_generation(test, lm, pc, config)
+            else:
+                results = util.single_step_generation(test, lm, pc, config)
 
-                            # Resume support: skip configs that already have a
-                            # result file from a previous (partial) run.
-                            output_filename = result_filename(config, split)
-                            output_path = os.path.join(
-                                config["results_path"], "final_run", output_filename
-                            )
-                            if os.path.exists(output_path):
-                                print(f"Results for config {output_filename} already exist, skipping...")
-                                continue
+            results.to_csv(output_path, index=False)
+            print(f"Results saved to {output_path}")
+            if config["prompt_mode"] == "explicit":
+                # Multi-step pipeline: one inference call per
+                # legal decision step, with early stopping per
+                # explicit_decisions.yaml. Returns a finished
+                # results frame (id, description, DEF, ...).
+                all_replies = util.multi_step_generation(test, lm, pc, config)
 
-                            print(f"Running config: {output_filename.removesuffix('.csv')}")
+                # Serialize the chat-format prompts so the CSV
+                # stays one row per test instance.
+                all_replies["prompt"] = all_replies["prompt"].apply(
+                    lambda x: json.dumps(x, ensure_ascii=False) if x is not None else None
+                )
+                all_replies.to_csv(output_path, index=False)
+                print(f"Results saved to {output_path}")
 
-                            pc = util.PromptConstructor(kb, config)
+            else:
+                # Single-step modes: build one prompt per test
+                # instance (includes retrieval if configured).
+                if config["embedding_mode"] is not None:
+                    print(f"Retrieving demonstrations {datetime.now()}...")
+                prompts = [
+                    pc.construct(text, system_prompt=True)
+                    for text in tqdm(test["description"])
+                ]
 
-                            if config["prompt_mode"] == "explicit":
-                                # Multi-step pipeline: one inference call per
-                                # legal decision step, with early stopping per
-                                # explicit_decisions.yaml. Returns a finished
-                                # results frame (id, description, DEF, ...).
-                                all_replies = util.multi_step_generation(test, lm, pc, config)
+                # Re-prime the KV cache for the shared prompt
+                # prefix before batched generation.
+                lm.update_kv_cache()
 
-                                # Serialize the chat-format prompts so the CSV
-                                # stays one row per test instance.
-                                all_replies["prompt"] = all_replies["prompt"].apply(
-                                    lambda x: json.dumps(x, ensure_ascii=False) if x is not None else None
-                                )
-                                all_replies.to_csv(output_path, index=False)
-                                print(f"Results saved to {output_path}")
+                print(f"Generating answers {datetime.now()}...")
+                generated_answers = lm.generate(
+                    prompts,
+                    max_tokens=config["max_tokens"],
+                    thinking_mode=config["thinking_mode"],
+                )
+                # Parse True/False from each reply; None marks
+                # an abstention (excluded later by evaluate.py).
+                y_pred = [util.read_labels_from_answer(a) for a in generated_answers]
 
-                            else:
-                                # Single-step modes: build one prompt per test
-                                # instance (includes retrieval if configured).
-                                if config["embedding_mode"] is not None:
-                                    print(f"Retrieving demonstrations {datetime.now()}...")
-                                prompts = [
-                                    pc.construct(text, system_prompt=True)
-                                    for text in tqdm(test["description"])
-                                ]
+                pd.DataFrame({
+                    "id": test["id"],
+                    "description": test["description"],
+                    "DEF": test["DEF"],
+                    "predicted_label": y_pred,
+                    "reply": generated_answers,
+                    "prompt": [json.dumps(p, ensure_ascii=False) for p in prompts],
+                }).to_csv(output_path, index=False)
+                print(f"Results saved to {output_path}")
 
-                                # Re-prime the KV cache for the shared prompt
-                                # prefix before batched generation.
-                                lm.update_kv_cache()
-
-                                print(f"Generating answers {datetime.now()}...")
-                                generated_answers = lm.generate(
-                                    prompts,
-                                    max_tokens=config["max_tokens"],
-                                    thinking_mode=config["thinking_mode"],
-                                )
-                                # Parse True/False from each reply; None marks
-                                # an abstention (excluded later by evaluate.py).
-                                y_pred = [util.read_labels_from_answer(a) for a in generated_answers]
-
-                                pd.DataFrame({
-                                    "id": test["id"],
-                                    "description": test["description"],
-                                    "DEF": test["DEF"],
-                                    "predicted_label": y_pred,
-                                    "reply": generated_answers,
-                                    "prompt": [json.dumps(p, ensure_ascii=False) for p in prompts],
-                                }).to_csv(output_path, index=False)
-                                print(f"Results saved to {output_path}")
+        # Release the model and knowledge bases before the next fold's index
+        # structures are built, so their embedding work has the GPU to itself.
+        del know_base
+        del step_know_base
+        del lm
+        gc.collect()
+        lm = None
 
 
 if __name__ == "__main__":

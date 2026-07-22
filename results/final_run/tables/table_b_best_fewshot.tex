@@ -1,0 +1,18 @@
+\begin{table*}[t]
+\centering
+\caption{Mean $F1_{macro}$ per model and prompt mode (over all configurations). \textbf{Bold}: best prompt mode per model.}
+\label{tab:b-best-fewshot}
+\small
+\begin{tabular}{lrrrr}
+\toprule
+Model & Title & Desc. & Implicit & Explicit \\
+\midrule
+Gemma-4 26B & 0.683 & 0.699 & \textbf{0.715} & 0.687 \\
+Gemma-4 E4B & 0.579 & 0.593 & 0.545 & \textbf{0.639} \\
+Qwen3.5 9B & 0.529 & 0.588 & 0.598 & \textbf{0.605} \\
+EuroLLM 22B & 0.345 & 0.386 & 0.380 & \textbf{0.437} \\
+\midrule
+\textit{Mean} & \textit{0.534} & \textit{0.567} & \textit{0.559} & \textit{\textbf{0.592}} \\
+\bottomrule
+\end{tabular}
+\end{table*}

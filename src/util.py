@@ -7,9 +7,12 @@ This module provides:
   - KnowledgeBase: retrieval store for few-shot demonstration examples (dense, sparse, fusion)
   - MultiStepKnowledgeBase: per-step retrieval stores for the 'explicit' multi-step pipeline
   - PromptConstructor: builds chat-formatted prompts, optionally with retrieved demonstrations
-  - Helpers for config validation, data loading, label extraction, and multi-step generation
+  - single_step_generation / multi_step_generation: the two classification pipelines
+  - Helpers shared by all runner scripts: config validation, data loading,
+    label extraction, result filenames, proportional demonstration ratios
 """
 
+import json
 import os
 import random
 import re
@@ -164,7 +167,7 @@ class LM:
     batch-size estimation from available GPU memory, and OOM recovery.
     """
 
-    def __init__(self, repo_id: str):
+    def __init__(self,repo_id:str,quantisation:bool=False):
         """
         Load a model from the HuggingFace Hub and estimate the maximum
         number of KV-cache tokens that fit in free GPU memory.
@@ -174,11 +177,27 @@ class LM:
         """
 
         self.model_name = repo_id
-        self.load()
+        self.load(quantisation)
         self.update_kv_cache()
 
-    def load(self):
+
+    def load(self,quantisation):
+
         """Load the model and tokenizer from HuggingFace Hub onto available devices."""
+
+        if quantisation:
+            self.model = AutoModelForCausalLM.from_pretrained(
+                self.model_name,
+                low_cpu_mem_usage=True,
+                device_map='auto',
+                quantization_config=BitsAndBytesConfig(load_in_8bit=True),
+                )
+        else:
+            self.model = AutoModelForCausalLM.from_pretrained(
+                self.model_name,
+                low_cpu_mem_usage=True,
+                device_map='auto',
+                )
 
         self.model = AutoModelForCausalLM.from_pretrained(
             self.model_name,
@@ -210,9 +229,23 @@ class LM:
             for device in range(torch.cuda.device_count())
         )
 
+        # Multimodal wrappers nest the text model's dimensions in text_config
+        model_config = self.model.config
+        if "num_hidden_layers" not in model_config and "text_config" in model_config:
+            model_config = model_config.text_config
+
+        if "num_hidden_layers" not in model_config or "hidden_size" not in model_config:
+            raise RuntimeError(
+                f"Cannot estimate KV-cache size for {self.model_name}: its config "
+                "exposes neither num_hidden_layers/hidden_size nor a text_config."
+            )
+
         # Estimate KV-cache capacity: each token occupies
         # 2 (key+value) × 2 bytes (bfloat16) × num_layers × hidden_size bytes
         # Reference: https://www.baseten.co/blog/llm-transformer-inference-guide/#3500759-estimating-total-generation-time-on-each-gpu
+        self.kv_cache_tokens = (
+            free_memory
+            / (2 * 2 * model_config.num_hidden_layers * model_config.hidden_size))
         if (
             "num_hidden_layers" in self.model.config
             and "hidden_size" in self.model.config
@@ -315,8 +348,10 @@ class LM:
 
         input_length = inputs["input_ids"].shape[1]  # prompt length
 
-        # handle OOM errors by splitting batch in half and recursively calling get_ouput
-        oom = False
+        # CUDA out-of-memory surfaces as a generic RuntimeError. The recovery
+        # (halving the batch) must happen *outside* the except block: while it
+        # is active, the exception's traceback pins the failed generate() call's
+        # stack frames — and with them its GPU allocations.
         try:
             generated_ids = self.model.generate(
                 **inputs,
@@ -329,18 +364,21 @@ class LM:
             return self.tokenizer.batch_decode(new_tokens, skip_special_tokens=True)
 
         except RuntimeError as e:
-            # handle CUDA out-of-memory by halving the batch
             print(e)
+            if len(batch) == 1:
+                # A single prompt that still does not fit cannot be split any
+                # further — return an empty reply to keep outputs aligned
+                print("Warning: inference failed for one sample that does not fit into GPU memory")
+                return [""]
             print("OOM error — splitting batch in half and retrying...")
-            oom = True
 
-        if oom:
-            # Split the batch in half and generate output for each half separately
+            # Each half is re-tokenized in the recursive call, so the full-batch
+            # tensors can be released before retrying
+            del inputs
             mid = len(batch) // 2
-            return self.get_output(
-                batch[:mid], max_tokens=max_tokens, thinking_mode=thinking_mode
-            ) + self.get_output(
-                batch[mid:], max_tokens=max_tokens, thinking_mode=thinking_mode
+            return (
+                self.get_output(batch[:mid], max_tokens=max_tokens, thinking_mode=thinking_mode)
+                + self.get_output(batch[mid:], max_tokens=max_tokens, thinking_mode=thinking_mode)
             )
 
     def generate(
@@ -390,7 +428,7 @@ class KnowledgeBase:
 
     Demonstration selection modes:
       - dynamic : retrieve examples per query text at inference time
-      - static  : return a fixed, pre-optimised set of examples (not implemented yet)
+      - static  : return a fixed, pre-optimised set of examples
 
     Retrieval modes for dynamic selection:
       - similarity : retrieve most similar examples (cosine similarity for dense, BM25 score for sparse)
@@ -420,21 +458,31 @@ class KnowledgeBase:
     def update_config(self, config):
         """
         Adopt the retrieval-related settings of a (changed) config without
-        re-indexing the data. Loads the embedding model on first call;
-        subsequent calls (and knowledge bases sharing the model) reuse it.
+        re-indexing the data. Loads the embedding model on first call for
+        dynamic mode; subsequent calls (and knowledge bases sharing the
+        model) reuse it.
         """
         self.embedding_mode = config["embedding_mode"]
         self.demonstration_size = config["demonstration_size"]
         self.demonstration_mode = config["demonstration_mode"]
         self.retrieval_mode = config["retrieval_mode"]
+        self.prompt_mode = config["prompt_mode"]
+        self.embedding_model_name = config["embedding_model"]
+        self.template_path = config["template_path"]
         # Keep the BM25 retrievers in sync with a changed demonstration size
         # (the diversity clusters stay fixed at their build-time size)
         if getattr(self, "built", False):
+            self.retriever_hate.k = self.demonstration_size//2
+            self.retriever_non_hate.k = self.demonstration_size//2
+        # Only dynamic mode embeds the training data (dense index + KMeans
+        # clusters); static demonstrations never need the embedding model
+        if self.embedding_model is None and self.demonstration_mode == "dynamic":
             self.retriever_hate.k = self.demonstration_size // 2
             self.retriever_non_hate.k = self.demonstration_size // 2
         if self.embedding_model is None:
             self.embedding_model = HuggingFaceEmbeddings(
-                model_name=config["embedding_model"], model_kwargs={"device": "cuda"}
+                model_name=config["embedding_model"], 
+                model_kwargs={"device": "cuda"}
             )
 
     def build(self, data: list[str], labels: list[bool]):
@@ -458,6 +506,15 @@ class KnowledgeBase:
         ]
 
         if self.demonstration_mode == "dynamic":
+
+            # Lazy fallback: the embedding model is not loaded at construction
+            # time when the knowledge base starts out non-dynamic (see
+            # update_config) but is required for all dynamic index structures
+            if self.embedding_model is None:
+                self.embedding_model = HuggingFaceEmbeddings(
+                    model_name=self.embedding_model_name,
+                    model_kwargs={"device": "cuda"})
+
             # Dense index: one vector store over both classes; class filtering
             # happens at query time via a metadata filter
             vector_store = InMemoryVectorStore(self.embedding_model)
@@ -512,92 +569,130 @@ class KnowledgeBase:
             self.built = True
 
         elif self.demonstration_mode == "static":
-            # TODO: implement a search routine to find the best-performing static demonstrations
-            pass
 
-    def retrieve_dense(self, query: str, label: bool) -> dict[str, bool]:
+            if self.prompt_mode == "title":
+
+                with open(os.path.join(self.template_path,"static_title.yaml")) as stream:
+                    self.static_demonstrations = yaml.safe_load(stream)
+
+
+            elif self.prompt_mode == "implicit":
+
+                with open(os.path.join(self.template_path,"static_implicit.yaml")) as stream:
+                    self.static_demonstrations = yaml.safe_load(stream)      
+
+
+
+    def retrieve_dense(self, query:str, label:bool, k:int=None) -> dict[str, bool]:
         """
-        Retrieve demonstration_size // 2 examples of one class from the dense
-        index, using the configured retrieval_mode (similarity, mmr, or diversity).
+        Retrieve k examples of one class from the dense index, using the
+        configured retrieval_mode (similarity, mmr, or diversity).
+        k defaults to demonstration_size // 2.
         """
+        k = k if k is not None else self.demonstration_size // 2
         class_filter = lambda doc: doc.metadata.get("label") == label
 
         if self.retrieval_mode == "similarity":
             closest_docs = self.vector_store.similarity_search(
-                query, k=self.demonstration_size // 2, filter=class_filter
-            )
+                query,
+                k=k,
+                filter=class_filter
+                )
             return {doc.page_content.strip(): label for doc in closest_docs}
         elif self.retrieval_mode == "mmr":
             closest_docs = self.vector_store.max_marginal_relevance_search(
                 query,
-                k=self.demonstration_size // 2,
-                fetch_k=self.demonstration_size * 2,
-                filter=class_filter,
-            )
+                k=k,
+                fetch_k=k*4,
+                filter=class_filter
+                )
             return {doc.page_content.strip(): label for doc in closest_docs}
         elif self.retrieval_mode == "diversity":
-            # One randomly drawn example per KMeans cluster of this class
+            # One randomly drawn example per KMeans cluster of this class;
+            # clusters are fixed at build time (demonstration_size//2), so k
+            # is respected up to the number of clusters available
             clustering = self.cluster_hate if label else self.cluster_non_hate
             docs = {}
 
             for cluster in list(clustering.values()):
                 docs[random.choice(cluster)] = label
+                if len(docs) == k:
+                    break
 
             return docs
 
-    def retrieve_sparse(self, query: str, label: bool) -> dict[str, bool]:
+
+    def retrieve_sparse(self, query:str, label:bool, k:int=None) -> dict[str, bool]:
         """Retrieve the top BM25 matches from the given class's own retriever."""
         retriever = self.retriever_hate if label else self.retriever_non_hate
+        if k is not None:
+            retriever.k = k
         closest_docs = retriever.invoke(query)
         return {doc.page_content.strip(): label for doc in closest_docs}
 
-    def retrieve(self, query: str, label: bool) -> dict[str, bool]:
+    def retrieve(self, query: str, label: bool, k:int=None) -> dict[str, bool]:
         """
-        Retrieve the demonstration_size // 2 most relevant examples of one class,
-        dispatching to dense, sparse, or fusion retrieval per the config.
+        Retrieve k examples of one class, dispatching to dense, sparse, or
+        fusion retrieval per the config. k defaults to demonstration_size // 2.
 
         Args:
             query: The input text to find similar examples for.
             label: Class label to filter by (True = prosecutable).
+            k:     Number of examples to retrieve. Defaults to demonstration_size // 2.
 
         Returns:
             Dict mapping retrieved text → label.
         """
+        k = k if k is not None else self.demonstration_size // 2
 
         if self.embedding_mode == "dense":
-            return self.retrieve_dense(query, label)
+            return self.retrieve_dense(query,label,k)
 
         elif self.embedding_mode == "sparse":
-            return self.retrieve_sparse(query, label)
+            return self.retrieve_sparse(query,label,k)
 
         elif self.embedding_mode == "fusion":
-            # Alternate between dense and sparse results until k/2 examples
+            # Alternate between dense and sparse results until k examples
             # are collected; the dict deduplicates texts found by both
-            dense_demos = self.retrieve_dense(query, label)
-            sparse_demos = self.retrieve_sparse(query, label)
+            dense_demos = self.retrieve_dense(query,label,k)
+            sparse_demos = self.retrieve_sparse(query,label,k)
 
             demos = {}
             for dense_demo, sparse_demo in zip(dense_demos.keys(), sparse_demos.keys()):
                 demos[dense_demo] = label
-                if len(demos) == self.demonstration_size // 2:
+                if len(demos) == k:
                     break
                 demos[sparse_demo] = label
-                if len(demos) == self.demonstration_size // 2:
+                if len(demos) == k:
                     break
 
             return demos
 
-    def query(self, query: str, demonstration_mode) -> dict[str, bool]:
+
+    def query(self, query: str, demonstration_mode, ratio:dict=None) -> dict[str, bool]:
         """
-        Return a class-balanced set of demonstration examples (both classes).
+        Return a set of demonstration examples covering both classes.
 
         Args:
             query:              The input text used to select relevant demonstrations.
             demonstration_mode: 'dynamic' or 'static'.
+            ratio:              Optional per-class counts {"pos": int, "neg": int}
+                                (must sum to demonstration_size). Defaults to an
+                                equal split between the classes.
 
         Returns:
-            Dict mapping example text → label, with equal representation of each class.
+            Dict mapping example text → label.
         """
+
+        if ratio is not None:
+            num_pos = ratio["pos"]
+            num_neg = ratio["neg"]
+        else:
+            num_pos = self.demonstration_size//2
+            num_neg = self.demonstration_size//2
+
+        assert num_pos+num_neg == self.demonstration_size, "Number of neg/pos demos does not add up to set demonstration size"
+
 
         if demonstration_mode == "dynamic" and not self.built:
             # The index structures are missing when the knowledge base was
@@ -607,23 +702,22 @@ class KnowledgeBase:
 
         if demonstration_mode == "dynamic" and self.retrieval_mode != "random":
             # Retrieve the most relevant examples from each class
-            return self.retrieve(query, False) | self.retrieve(query, True)
+            return self.retrieve(query,False,num_neg) | self.retrieve(query,True,num_pos)
 
         elif self.retrieval_mode == "random":
             # Sample an equal number of examples from each class, ignoring the query
             negatives = [doc for doc in self.documents if not doc.metadata["label"]]
             positives = [doc for doc in self.documents if doc.metadata["label"]]
-            return {
-                doc.page_content.strip(): doc.metadata["label"]
-                for doc in random.sample(negatives, self.demonstration_size // 2)
-            } | {
-                doc.page_content.strip(): doc.metadata["label"]
-                for doc in random.sample(positives, self.demonstration_size // 2)
-            }
+            return (
+                {doc.page_content.strip(): doc.metadata["label"]
+                 for doc in random.sample(negatives, num_neg)}
+                | {doc.page_content.strip(): doc.metadata["label"]
+                   for doc in random.sample(positives, num_pos)}
+            )
 
         elif demonstration_mode == "static":
-            # Pre-optimised fixed demonstration set — not implemented yet
-            # (nothing sets static_demonstrations; see the TODO in build())
+            # Fixed demonstration set selected once in build(); only defined
+            # for the 'title' and 'implicit' prompt modes
             return self.static_demonstrations
 
 
@@ -824,8 +918,13 @@ class PromptConstructor:
         ].strip()
 
     def create_message(
-        self, text, task, demonstrations=None, system_prompt=False
-    ) -> list[dict[str, str]]:
+            self,
+            text,
+            task,
+            demonstrations=None,
+            system_prompt=False,
+            order:str="random"
+            ) -> list[dict[str,str]]:
         """
         Assemble a list of chat messages for a single classification example.
 
@@ -852,6 +951,13 @@ class PromptConstructor:
 
         if demonstrations is not None:
             demo_list = list(demonstrations.items())
+            if order == "random":
+                random.shuffle(demo_list) # Randomise order to avoid position bias
+            elif order == "true_first":
+                demo_list.sort(key=lambda x: x[1], reverse=True)
+            elif order == "true_last":
+                demo_list.sort(key=lambda x: x[1])
+
             random.shuffle(demo_list)  # Randomise order to avoid position bias
             for demo_text, label in demo_list:
                 messages.append({"role": "user", "content": demo_text})
@@ -863,12 +969,15 @@ class PromptConstructor:
         return messages
 
     def construct(
-        self,
-        text: str,
-        task: str | None = None,
-        system_prompt: bool = False,
-        step: str | None = None,
-    ) -> list[dict[str, str]]:
+            self,
+            text: str,
+            task:str | None=None,
+            system_prompt: bool =False,
+            step: str | None=None,
+            order : str = "random",
+            ratio : dict = None
+            ) -> list[dict[str,str]]:
+
         """
         Build a complete prompt for the given text.
 
@@ -893,14 +1002,10 @@ class PromptConstructor:
                     text, self.demonstration_mode, step=step
                 )
             else:
-                demonstrations = self.knowledge_base.query(
-                    text, self.demonstration_mode
-                )
+                demonstrations = self.knowledge_base.query(text, self.demonstration_mode,ratio=ratio)
         else:
             demonstrations = None
-        return self.create_message(
-            text, task, demonstrations, system_prompt=system_prompt
-        )
+        return self.create_message(text, task, demonstrations, system_prompt=system_prompt, order=order)
 
 
 # ---------------------------------------------------------------------------
@@ -939,6 +1044,10 @@ def validate_config(config: dict, check_model: bool = True) -> dict:
         assert repo_exists(config["model_name"]), (
             f"Model '{config['model_name']}' does not exist on the HuggingFace Hub."
         )
+
+    for key in config.keys():
+        if config[key] == "None":
+            config[key] = None
 
     # --- Parameter range / allowed-value checks ---
     assert config["max_tokens"] > 0, "max_tokens must be a positive integer."
@@ -1020,6 +1129,73 @@ def validate_config(config: dict, check_model: bool = True) -> dict:
 # ---------------------------------------------------------------------------
 
 
+def result_filename(config: dict, fold: int | None = None) -> str:
+    """
+    Build the standard result filename (see CLAUDE.md):
+    {model}_{prompt}_{demo_mode}_{demo_size}_{embedding}_{retrieval}[_fold-N][_thinking].csv
+
+    None values appear literally as "None". The model name is shortened to the
+    part after the last "/" of the HuggingFace repo id.
+
+    Args:
+        config: Pipeline configuration dictionary.
+        fold:   Cross-validation fold index; omitted from the name when None
+                (e.g. competition runs without CV).
+    """
+    model_short = config["model_name"].split("/")[-1]
+    fold_suffix = f"_fold-{fold}" if fold is not None else ""
+    thinking_suffix = "_thinking" if config["thinking_mode"] else ""
+
+    return (
+        f"{model_short}_"
+        f"{config['prompt_mode']}_"
+        f"{config['demonstration_mode']}_"
+        f"{config['demonstration_size']}_"
+        f"{config['embedding_mode']}_"
+        f"{config['retrieval_mode']}"
+        f"{fold_suffix}"
+        f"{thinking_suffix}.csv"
+    )
+
+
+def proportional_demo_ratio(labels: pd.Series, demonstration_size: int) -> dict[str, int]:
+    """
+    Per-class demonstration counts that mirror the class distribution of the
+    train split (used by runs with ratio == 'proportional').
+
+    Each class gets at least one demonstration. Because the two per-class
+    counts are rounded independently, their sum can be one off — in that case
+    a single count is adjusted so the total is exactly demonstration_size.
+
+    Args:
+        labels:             Binary labels of the train split (the DEF column).
+        demonstration_size: Total number of demonstrations (k).
+
+    Returns:
+        {"pos": <count for True>, "neg": <count for False>}
+    """
+    num_neg = int(max(1, round(demonstration_size * (labels == False).sum() / len(labels))))
+    num_pos = int(max(1, round(demonstration_size * (labels == True).sum() / len(labels))))
+
+    diff = demonstration_size - (num_pos + num_neg)
+    if diff == 1:
+        # One short: top up the under-represented class
+        if num_pos <= num_neg:
+            num_pos += 1
+        else:
+            num_neg += 1
+    elif diff == -1:
+        # One over: take it from the over-represented class
+        if num_pos >= num_neg:
+            num_pos -= 1
+        else:
+            num_neg -= 1
+
+    assert num_pos + num_neg == demonstration_size, (
+        "Demo ratio does not add up to set demonstration size")
+    return {"pos": num_pos, "neg": num_neg}
+
+
 def read_labels_from_answer(answer: str) -> bool | None:
     """
     Extract a binary True/False label from a free-text model answer via
@@ -1060,13 +1236,74 @@ def load_data(file_path: str) -> tuple[pd.DataFrame, pd.DataFrame]:
 
 
 # ---------------------------------------------------------------------------
-# Multi-step (chain-of-thought) generation pipeline
+# Generation pipelines
 # ---------------------------------------------------------------------------
 
 
+def single_step_generation(
+        test: pd.DataFrame,
+        lm: LM,
+        pc: PromptConstructor,
+        config: dict,
+        order: str = "random",
+        ratio: dict | None = None,
+        ) -> pd.DataFrame:
+    """
+    Run the single-prompt classification pipeline ('title', 'description',
+    'implicit') over the test set: build one prompt per instance (including
+    demonstration retrieval if configured), generate, and parse the labels.
+
+    Args:
+        test:   Test DataFrame with "id" and "description" columns; a "DEF"
+                column is carried over when present (absent for the
+                unlabelled competition test set).
+        lm:     Loaded LM instance for text generation.
+        pc:     PromptConstructor for a single-step prompt mode.
+        config: Pipeline configuration dictionary.
+        order:  Demonstration ordering ('random', 'true_first', 'true_last').
+        ratio:  Optional per-class demonstration counts (see proportional_demo_ratio).
+
+    Returns:
+        DataFrame with id, description, [DEF,] predicted_label (None where the
+        model's reply was ambiguous), reply, and the JSON-serialised prompt.
+        Persisting the result is left to the caller.
+    """
+    if config["embedding_mode"] is not None:
+        print(f"Retrieving demonstrations {datetime.now()}...")
+    prompts = [pc.construct(text, order=order, ratio=ratio) for text in tqdm(test["description"])]
+
+    # Re-estimate the batch size from the GPU memory that is free right now
+    # (the embedding model may have been loaded since the LM was)
+    lm.update_kv_cache()
+
+    print(f"Classifying {datetime.now()}...")
+    generated_answers = lm.generate(
+        prompts,
+        max_tokens=config["max_tokens"],
+        thinking_mode=config["thinking_mode"],
+    )
+    y_pred = [read_labels_from_answer(a) for a in generated_answers]
+
+    results = pd.DataFrame({
+        "id": test["id"],
+        "description": test["description"],
+        "predicted_label": y_pred,
+        "reply": generated_answers,
+        # Serialise the chat-format prompts so the CSV stays one row per instance
+        "prompt": [json.dumps(p, ensure_ascii=False) for p in prompts],
+    })
+    if "DEF" in test.columns:
+        results.insert(2, "DEF", test["DEF"])
+    return results
+
+
 def multi_step_generation(
-    test: pd.DataFrame, lm: LM, pc: PromptConstructor, config: dict
-) -> pd.DataFrame:
+        test:pd.DataFrame,
+        lm:LM,
+        pc:PromptConstructor,
+        config:dict,
+        order:str="random",
+        ) -> pd.DataFrame:
     """
     Run the multi-step ('explicit') classification pipeline over the test set.
 
@@ -1087,10 +1324,10 @@ def multi_step_generation(
         config: Pipeline configuration dictionary.
 
     Returns:
-        A copy of the test DataFrame extended with the last step's "prompt",
-        per-step label and reply columns (stepN, stepN_reply), and the final
-        "predicted_label" (None where the model's reply was ambiguous).
-        Persisting the result is left to the caller.
+        A copy of the test DataFrame extended with the last step's prompt
+        (JSON-serialised), per-step label and reply columns (stepN,
+        stepN_reply), and the final "predicted_label" (None where the model's
+        reply was ambiguous). Persisting the result is left to the caller.
     """
 
     # Load the per-step decision logic (maps True/False label → "continue" | final label)
@@ -1117,9 +1354,8 @@ def multi_step_generation(
         for i, row in all_replies.iterrows():
             if not row["continue"]:
                 continue
-            all_replies.at[i, "prompt"] = pc.construct(
-                row["description"], task, system_prompt=True, step=step
-            )
+            all_replies.at[i, "prompt"] = pc.construct(row["description"], task, system_prompt=True, step=step,order=order)
+
 
         # --- Generate answers for all still-active examples ---
         active_mask = all_replies["continue"]
@@ -1165,5 +1401,9 @@ def multi_step_generation(
                     )
                     all_replies.loc[i, "continue"] = False
                     all_replies.loc[i, "predicted_label"] = None
+
+    # Serialise the chat-format prompts so the CSV stays one row per instance
+    all_replies["prompt"] = all_replies["prompt"].apply(
+        lambda x: json.dumps(x, ensure_ascii=False) if x is not None else None)
 
     return all_replies

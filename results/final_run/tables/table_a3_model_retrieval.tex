@@ -1,0 +1,16 @@
+\begin{table*}[t]
+\centering
+\caption{$F1_{macro}$ by model and retrieval configuration (k=8, mean over all prompt modes). \textbf{Bold}: best retrieval config per model; \textit{italic}: worst. $\Delta$ = best$-$worst.}
+\label{tab:a3-model-retrieval}
+\small
+\begin{tabular}{lrrrrrrr}
+\toprule
+Model & D-Sim & D-MMR & D-Div & F-Sim & S-Sim & Rand & $\Delta$ \\
+\midrule
+Gemma-4 26B & \textbf{0.709} & 0.709 & 0.701 & 0.705 & \textit{0.693} & 0.696 & 0.016 \\
+Gemma-4 E4B & \textbf{0.607} & \textit{0.584} & 0.606 & 0.598 & 0.594 & 0.600 & 0.023 \\
+Qwen3.5 9B & 0.579 & \textit{0.576} & \textbf{0.596} & 0.579 & 0.583 & 0.595 & 0.019 \\
+EuroLLM 22B & \textbf{0.438} & 0.401 & \textit{0.384} & 0.427 & 0.430 & 0.388 & 0.054 \\
+\bottomrule
+\end{tabular}
+\end{table*}

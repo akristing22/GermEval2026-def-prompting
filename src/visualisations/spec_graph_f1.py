@@ -1,15 +1,16 @@
 #!/usr/bin/env python3
 """
-Specification curve (boxplot variant) — F1 Macro across prompting strategy configurations.
+Specification curve — F1 Macro across prompting strategy configurations.
 
-Keeps per-fold F1 values (read from results/final_run/score_table_folds.csv)
-so each box shows fold-level variance.
-Adapted from specification_graph.py (another project) for this research project.
+Uses consolidated per-config mean F1 (read from
+results/final_run/score_table_consolidated.csv) and follows the visual
+convention of Simonsohn et al. (2020): a top panel with the sorted
+specification curve and a bottom panel marking each specification's choices.
 
-Dimensions shown in spec grid: model, prompt_mode, demo_size, embedding_mode, retrieval_mode.
-Color-coded by model.
-
-Output: results/final_run/figures/spec_curve_f1_boxplot.{pdf,svg} (+ variants)
+Figures written to results/final_run/figures/:
+  - spec_curve_f1            all configs, model as a spec dimension
+  - spec_curve_f1_nomodel    model pooled (one dot per model and spec)
+  - spec_curve_f1_{model}    one curve per model
 """
 import os
 import sys
@@ -22,61 +23,58 @@ import pandas as pd
 from mpl_toolkits.axisartist import axislines
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from model_colors import get_model_colors
+from model_colors import get_label_colors, MODEL_LABELS, sort_model_labels
 from common import (
     FINAL_RUN_FIGURES_DIR as FIGURES_DIR,
+    KNN_BASELINE_F1,
     MEASURE,
-    SCORE_TABLE_FOLDS,
+    SCORE_TABLE_CONSOLIDATED,
+    add_retrieval_config_column,
+    load_consolidated_scores,
     save_figure,
 )
-import common
-
-ACCENT = "#2979a0"
 
 # ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
-GROUP_COLS = ["model", "prompt_mode", "demo_size", "emb_mode", "retrieval_mode"]
+GROUP_COLS = ["model", "prompt_mode", "retrieval_config"]
 COLOR_COL  = "model"
 
+# Display order of the categories within each spec-grid row
 SPEC_ORDER = {
-    #"model":         ["gemma-4-E4B-it", "Qwen3.5-9B", "gemma-4-26B-A4B-it", "EuroLLM-22B-Instruct-2512"],
-    "prompt_mode":   ["title", "description", "implicit", "explicit"],
-    "demo_size":     ["0", "8"],
-    "emb_mode":      ["None", "dense", "sparse", "fusion"],
-    "retrieval_mode":["None", "random", "similarity", "diversity", "mmr"],
+    "prompt_mode":      ["Title", "Description", "Implicit", "Explicit"],
+    "retrieval_config": ["Zero-Shot", "Random", "Similarity (Dense)", "Similarity (Sparse)",
+                         "Similarity (Fusion)", "Diversity (Dense)", "MMR (Dense)"],
 }
 COL_LABEL = {
-    #"model":         "Model",
-    "prompt_mode":   "Prompt mode",
-    "demo_size":     "Demo size",
-    "emb_mode":      "Embedding",
-    "retrieval_mode":"Retrieval",
+    "prompt_mode":      "Conditioning",
+    "retrieval_config": "Retrieval",
 }
 
-FIGURE_HEIGHT = 5.5
+FIGURE_HEIGHT = 4.4
 CURVE_TICK_FS  = 8
-SPEC_LABEL_FS  = 8
-SPEC_HEAD_FS   = 9
-MARKER_SIZE    = 7
-MARKER_EW      = 2
+SPEC_LABEL_FS  = 7
+SPEC_HEAD_FS   = 8
+MARKER_SIZE    = 8
+MARKER_EW      = 2.5
 AXIS_LABEL_FS  = 9
 
 
 # ---------------------------------------------------------------------------
-# Data loading — keep one row per (spec, fold)
+# Data loading — one row per config (consolidated across folds)
 # ---------------------------------------------------------------------------
 
-def load_fold_scores(score_table_path: str = SCORE_TABLE_FOLDS) -> pd.DataFrame:
-    """Load per-fold scores from score_table_folds.csv; demo_size as string
-    so it lines up with the categorical SPEC_ORDER grid."""
-    df = common.load_fold_scores(score_table_path)
-    df["demo_size"] = df["demo_size"].astype(str)
-    return df[GROUP_COLS + ["fold", MEASURE]]
+def load_scores(score_table_path: str = SCORE_TABLE_CONSOLIDATED) -> pd.DataFrame:
+    """Load consolidated scores and map them to display values."""
+    df = load_consolidated_scores(score_table_path)
+    df = add_retrieval_config_column(df)
+    df["prompt_mode"] = df["prompt_mode"].str.capitalize()
+    df["model"] = df["model"].map(lambda m: MODEL_LABELS.get(m, m))
+    return df[GROUP_COLS + [MEASURE]]
 
 
 # ---------------------------------------------------------------------------
-# Plotting helpers (adapted from specification_graph.py)
+# Plotting helpers
 # ---------------------------------------------------------------------------
 
 def _format_axes(ax_curve, ax_specs):
@@ -93,44 +91,28 @@ def _format_axes(ax_curve, ax_specs):
 
 
 def _plot_column(ax_curve, ax_specs, agg, plot_df, method_colors, model_colors,
-                 group_cols, color_col, scatter_only=False, model_lines=True):
-    """Render one specification curve column: violin (or points+mean) + spec indicator grid."""
+                 group_cols, color_col, model_lines=True):
+    """Render one specification curve column: points + spec indicator grid."""
 
     # ── top panel ────────────────────────────────────────────────────────────
-    data_per_spec = [
-        plot_df.loc[
-            np.logical_and.reduce([plot_df[c] == agg.loc[j, c] for c in group_cols]),
-            MEASURE,
-        ].values
-        for j in range(len(agg))
-    ]
-
-    if not scatter_only:
-        vp = ax_curve.violinplot(
-            data_per_spec,
-            positions=list(range(len(agg))),
-            widths=0.6,
-            showmedians=True,
-            showextrema=False,
-        )
-        for body in vp["bodies"]:
-            body.set_facecolor(ACCENT)
-            body.set_edgecolor(ACCENT)
-            body.set_alpha(0.25)
-            body.set_linewidth(1.2)
-        vp["cmedians"].set_color("black")
-        vp["cmedians"].set_linewidth(1.5)
-
+    # Each model's best specification is highlighted with a star marker
+    best_idxs = set(plot_df.groupby("model")[MEASURE].idxmax().values)
     rng = np.random.default_rng(42)
     for j in range(len(agg)):
         mask = np.logical_and.reduce([plot_df[c] == agg.loc[j, c] for c in group_cols])
         sub = plot_df.loc[mask]
-        xs = j + rng.uniform(-0.12, 0.12, size=len(sub))
-        for k, (_, row) in enumerate(sub.iterrows()):
+        xs = j + rng.uniform(-0.12, 0.12, size=len(sub))  # jitter against overlap
+        for k, (idx, row) in enumerate(sub.iterrows()):
+            is_best = (idx in best_idxs)
             ax_curve.scatter(xs[k], row[MEASURE],
-                             color=model_colors[row["model"]], s=18, alpha=0.85, zorder=3)
+                             color=model_colors[row["model"]],
+                             s=60 if is_best else 18,
+                             marker="*" if is_best else "o",
+                             alpha=0.95 if is_best else 0.85,
+                             zorder=4 if is_best else 3)
 
-    if scatter_only and model_lines:
+    if model_lines:
+        # Connect each model's mean F1 across the sorted specifications
         for model in sorted(plot_df["model"].unique()):
             xs_line, ys_line = [], []
             for j in range(len(agg)):
@@ -147,7 +129,7 @@ def _plot_column(ax_curve, ax_specs, agg, plot_df, method_colors, model_colors,
 
     # ── bottom panel: spec indicator grid ────────────────────────────────────
     y_pos = {}
-    base_y, y_off = 1, 0.8
+    base_y, y_off = 1, 0.62
     minor_ys, minor_lbls = [], []
     major_ys, major_lbls = [], []
 
@@ -157,9 +139,9 @@ def _plot_column(ax_curve, ax_specs, agg, plot_df, method_colors, model_colors,
             y_pos[(var, str(val))] = base_y + k * y_off
             minor_ys.append(base_y + k * y_off)
             minor_lbls.append(str(val))
-        major_ys.append(base_y + (k + 0.7) * y_off)
+        major_ys.append(base_y + (k + 0.9) * y_off)
         major_lbls.append(COL_LABEL.get(var, var))
-        base_y += len(cats) + 1
+        base_y += len(cats) * y_off + 0.95
 
     # draw markers
     for j in range(len(agg)):
@@ -201,42 +183,43 @@ def _plot_column(ax_curve, ax_specs, agg, plot_df, method_colors, model_colors,
 # Main
 # ---------------------------------------------------------------------------
 
-def _build_figure(plot_df, group_cols, color_col, title, name, scatter_only=False, model_lines=True):
+def _build_figure(plot_df, group_cols, color_col, name, model_lines=True):
     """Build and save one specification curve figure."""
     agg = (
         plot_df
         .groupby(group_cols, dropna=False)[MEASURE]
-        .agg(["median", "std"])
+        .mean()
         .reset_index()
-        .sort_values("median", ascending=False)
+        .sort_values(MEASURE, ascending=True)
         .reset_index(drop=True)
     )
 
     # scatter dot colors — always by model (fixed scheme from CLAUDE.md)
-    models_sorted = sorted(plot_df["model"].unique())
-    model_colors = get_model_colors(models_sorted)
+    models_sorted = sort_model_labels(plot_df["model"].unique())
+    model_colors = get_label_colors(models_sorted)
 
     # spec-grid tick colors (for color_col row; gray if color_col not a spec dimension)
     cats_sorted = sorted(agg[color_col].unique()) if color_col in agg.columns else []
     if color_col == "model":
-        method_colors = get_model_colors(cats_sorted)
+        method_colors = get_label_colors(cats_sorted)
     else:
         method_colors = dict(zip(cats_sorted, plt.cm.tab10.colors))
 
     n = len(agg)
-    fig_w = max(10, n * 0.14 + 3)
+    fig_w = max(10, n * 0.01 + 3)
     fig = plt.figure(figsize=(fig_w, FIGURE_HEIGHT))
-    gs  = fig.add_gridspec(2, 1, height_ratios=[1.5, 2.2], hspace=0.03)
+    gs  = fig.add_gridspec(2, 1, height_ratios=[1.0, 1.9], hspace=0.03)
     ax_curve = fig.add_subplot(gs[0], axes_class=axislines.Axes)
     ax_specs = fig.add_subplot(gs[1], axes_class=axislines.Axes, sharex=ax_curve)
 
     _plot_column(ax_curve, ax_specs, agg, plot_df, method_colors, model_colors,
-                 group_cols, color_col, scatter_only=scatter_only, model_lines=model_lines)
+                 group_cols, color_col, model_lines=model_lines)
 
     ax_curve.set_ylabel("F1 Macro", fontsize=AXIS_LABEL_FS)
     ax_curve.tick_params(axis="y", labelsize=CURVE_TICK_FS)
-    ax_curve.set_ylim(0.2, 0.8)
-    baseline = ax_curve.axhline(0.64, color="grey", ls="--", lw=0.8, alpha=0.7, zorder=0)
+    ax_curve.set_ylim(0, 0.8)
+    baseline = ax_curve.axhline(KNN_BASELINE_F1, color="grey", ls="--", lw=0.8,
+                                alpha=0.7, zorder=0)
 
     handles = [
         plt.Line2D([0], [0], marker="o", color="w",
@@ -244,48 +227,46 @@ def _build_figure(plot_df, group_cols, color_col, title, name, scatter_only=Fals
         for m in models_sorted
     ]
     handles.append(baseline)
-    handles[-1].set_label("KNN baseline (0.64)")
-    ax_curve.legend(handles=handles, title="Model", loc="lower right",
-                    fontsize=7, title_fontsize=7, framealpha=0.8)
+    handles[-1].set_label(f"KNN baseline ({KNN_BASELINE_F1:.2f})")
+    ax_curve.legend(handles=handles,
+                    loc="lower right",
+                    ncol=2,
+                    fontsize=7, title_fontsize=7, framealpha=0.8,
+                    columnspacing=1.0, handletextpad=0.5)
 
-    fig.suptitle(title, fontsize=10, fontweight="bold", y=0.99)
-    plt.subplots_adjust(top=0.95)
+    plt.subplots_adjust(top=0.93, bottom=0.04)
     save_figure(fig, FIGURES_DIR, name)
     plt.close(fig)
 
 
 def main():
-    print(f"Loading scores from: {SCORE_TABLE_FOLDS}")
-    plot_df = load_fold_scores()
-    print(f"  {len(plot_df)} fold entries")
+    print(f"Loading scores from: {SCORE_TABLE_CONSOLIDATED}")
+    plot_df = load_scores()
+    print(f"  {len(plot_df)} configs")
 
     # Figure 1: model included as a spec dimension, colored by model
-    group_cols_full = ["model", "prompt_mode", "demo_size", "emb_mode", "retrieval_mode"]
+    group_cols_full = ["model", "prompt_mode", "retrieval_config"]
     print(f"  Figure 1: {plot_df.groupby(group_cols_full).ngroups} specs (with model)")
     _build_figure(
         plot_df,
         group_cols=group_cols_full,
         color_col="model",
-        title="Specification Curve — F1 Macro (violins = cross-validation folds)",
-        name="spec_curve_f1_boxplot",
+        name="spec_curve_f1",
     )
 
-    # Figure 2: model excluded from spec dimensions — violins span all models × folds,
-    # scatter dots colored by model
-    group_cols_no_model = ["prompt_mode", "demo_size", "emb_mode", "retrieval_mode"]
+    # Figure 2: model excluded from spec dimensions — dots per model, colored by model
+    group_cols_no_model = ["prompt_mode", "retrieval_config"]
     print(f"  Figure 2: {plot_df.groupby(group_cols_no_model).ngroups} specs (model pooled)")
     _build_figure(
         plot_df,
         group_cols=group_cols_no_model,
         color_col="model",
-        title="Specification Curve — F1 Macro (points + mean, all models pooled)",
-        name="spec_curve_f1_boxplot_nomodel",
-        scatter_only=True,
+        name="spec_curve_f1_nomodel",
         model_lines=False,
     )
 
-    # Figures 3–6: one per model — violins = cross-validation folds, no model dimension
-    for model_name in sorted(plot_df["model"].unique()):
+    # Figures 3-6: one per model, no model dimension
+    for model_name in sort_model_labels(plot_df["model"].unique()):
         model_df = plot_df[plot_df["model"] == model_name].copy()
         n_specs = model_df.groupby(group_cols_no_model).ngroups
         safe_name = model_name.replace("/", "-")
@@ -294,9 +275,7 @@ def main():
             model_df,
             group_cols=group_cols_no_model,
             color_col="model",
-            title=f"Specification Curve — {model_name} — F1 Macro (points + mean)",
-            name=f"spec_curve_f1_boxplot_{safe_name}",
-            scatter_only=True,
+            name=f"spec_curve_f1_{safe_name}",
         )
 
 

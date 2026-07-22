@@ -1,0 +1,19 @@
+\begin{table*}[t]
+\centering
+\caption{$F1_{macro}$ by model and prompt mode. Each group shows zero-shot (ZS), best few-shot, and worst few-shot (k=8).}
+\label{tab:a1-model-prompt}
+\small
+\setlength{\tabcolsep}{4pt}
+\begin{tabular}{lrrrrrrrrrrrr}
+\toprule
+Model & \multicolumn{3}{c}{Title} & \multicolumn{3}{c}{Desc.} & \multicolumn{3}{c}{Implicit} & \multicolumn{3}{c}{Explicit} \\
+\cmidrule(lr){2-4} \cmidrule(lr){5-7} \cmidrule(lr){8-10} \cmidrule(lr){11-13}
+ & ZS & Best & Worst & ZS & Best & Worst & ZS & Best & Worst & ZS & Best & Worst \\
+\midrule
+Gemma-4 26B & \textbf{0.630} & \textbf{0.695} & 0.686 & \textbf{0.674} & \textbf{0.716} & 0.695 & \textbf{0.676} & \textbf{0.733} & 0.714 & \textbf{0.652} & \textbf{0.711} & 0.676 \\
+Gemma-4 E4B & 0.525 & 0.600 & 0.574 & 0.597 & 0.612 & 0.567 & 0.420 & 0.582 & 0.548 & 0.588 & 0.659 & 0.640 \\
+Qwen3.5 9B & 0.509 & 0.578 & 0.507 & 0.541 & 0.626 & 0.573 & 0.558 & 0.630 & 0.597 & 0.598 & 0.636 & 0.568 \\
+EuroLLM 22B & 0.169 & 0.395 & 0.352 & 0.222 & 0.436 & 0.389 & 0.211 & 0.447 & 0.356 & 0.358 & 0.474 & 0.417 \\
+\bottomrule
+\end{tabular}
+\end{table*}
