@@ -29,6 +29,7 @@ dist/
 
 # Notebook noise
 .ipynb_checkpoints/
+.ipynb
 
 # Editor and OS files
 .idea/
