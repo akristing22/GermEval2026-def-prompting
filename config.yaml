@@ -11,7 +11,7 @@
 # data_path: ./data
 # results_path: results/
 # template_path: ./templates
-# max_tokens: 16
+# max_tokens: 128
 model_backend: openai
 model_name: gpt-5.5-2026-04-23  # API mode name here
 embedding_model: codefuse-ai/F2LLM-v2-1.7B
@@ -21,10 +21,8 @@ demonstration_size: 8
 embedding_mode: dense #one of sparse, dense, fusion, None
 retrieval_mode : similarity #one of similarity, diversity, mmr, random, None
 thinking_mode: False
-data_path: /data
-results_path: /results/test
-template_path: /templates
-max_tokens: 10
-
-#ratio: proportional
-#order: true_first
+reasoning_effort: none
+data_path: ./data
+results_path: results/
+template_path: ./templates
+max_tokens: 128

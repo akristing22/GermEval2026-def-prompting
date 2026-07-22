@@ -100,6 +100,26 @@ def result_filename(cfg:dict,split:int) -> str:
     )
 
 
+def api_response_log_path(cfg: dict) -> str:
+    """Build a run-level JSONL path for raw OpenAI Responses API logs."""
+    configured = cfg.get("api_raw_response_log_path")
+    if configured:
+        return configured
+
+    model_short = cfg["model_name"].split("/")[-1]
+    thinking_suffix = "_thinking" if cfg["thinking_mode"] else ""
+    filename = (
+        f"{model_short}_"
+        f"{cfg['prompt_mode']}_"
+        f"{cfg['demonstration_mode']}_"
+        f"{cfg['demonstration_size']}_"
+        f"{cfg['embedding_mode']}_"
+        f"{cfg['retrieval_mode']}"
+        f"{thinking_suffix}_raw_api_responses.jsonl"
+    )
+    return os.path.join(cfg["results_path"], "api_logs", filename)
+
+
 def main():
     with open("config.yaml") as stream:
         config = yaml.safe_load(stream)
@@ -157,6 +177,8 @@ def main():
                     util.API_CONFIG(
                         model=config["model_name"],
                         max_output_tokens=config["max_tokens"],
+                        raw_response_log_path=api_response_log_path(config),
+                        reasoning_effort=config.get("reasoning_effort", "none"),
                     )
                 )
         elif config.get("finetune", False):

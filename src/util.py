@@ -90,6 +90,10 @@ class API_CONFIG:
     model: str = "gpt-5.5"
     # temperature: float = 0
     max_output_tokens: int = 160
+    raw_response_log_path: str | None = None
+    retry_unparseable: bool = True
+    max_parse_retries: int = 2
+    use_minimal_reprompt: bool = True
     reasoning_effort: Literal[
         "none", "minimal", "low", "medium", "high", "xhigh"
     ] = "none"
@@ -107,6 +111,10 @@ class LM_API:
     def __init__(self, api_config: API_CONFIG):
         self.config = api_config
         self.client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+        if self.config.raw_response_log_path is not None:
+            log_dir = os.path.dirname(self.config.raw_response_log_path)
+            if log_dir:
+                os.makedirs(log_dir, exist_ok=True)
 
     def update_kv_cache(self) -> None:
         """Compatibility no-op so LM_API can be used where LM is expected."""
@@ -127,6 +135,54 @@ class LM_API:
 
         return ("\n\n".join(instructions) if instructions else None), input_messages
 
+    def dump_api_response(self, api_response):
+        """Return a JSON-serialisable representation of an OpenAI response."""
+        if hasattr(api_response, "model_dump"):
+            return api_response.model_dump(mode="json")
+        if hasattr(api_response, "dict"):
+            return api_response.dict()
+        return repr(api_response)
+
+    def log_api_response(
+        self,
+        *,
+        prompt_index: int,
+        attempt: int,
+        minimal_reprompt: bool,
+        output_text: str,
+        parsed_label: bool | None,
+        api_response,
+    ) -> None:
+        """Append one raw API response record to the configured JSONL log."""
+        if self.config.raw_response_log_path is None:
+            return
+
+        raw_response = self.dump_api_response(api_response)
+        record = {
+            "timestamp": datetime.now().isoformat(),
+            "model": self.config.model,
+            "prompt_index": prompt_index,
+            "attempt": attempt,
+            "minimal_reprompt": minimal_reprompt,
+            "output_text": output_text,
+            "output_text_empty": output_text.strip() == "",
+            "parsed_label": parsed_label,
+            "response_id": getattr(api_response, "id", None),
+            "status": getattr(api_response, "status", None),
+            "incomplete_details": getattr(api_response, "incomplete_details", None),
+            "raw_response": raw_response,
+        }
+        with open(self.config.raw_response_log_path, "a", encoding="utf-8") as log_file:
+            log_file.write(json.dumps(record, ensure_ascii=False, default=str) + "\n")
+
+    def should_retry_answer(self, output_text: str) -> bool:
+        """Retry empty or unparseable label responses when configured."""
+        if not self.config.retry_unparseable:
+            return False
+        if output_text.strip() == "":
+            return True
+        return read_labels_from_answer(output_text) is None
+
     def generate(
         self,
         prompts: list[list[dict[str, str]]],
@@ -136,26 +192,66 @@ class LM_API:
     ) -> list[str]:
         outputs = []
 
-        for prompt in tqdm(
-            prompts, total=len(prompts), mininterval=1.0, dynamic_ncols=True
+        for prompt_index, prompt in enumerate(
+            tqdm(prompts, total=len(prompts), mininterval=1.0, dynamic_ncols=True)
         ):
             instructions, input_messages = self.split_responses_instructions(prompt)
+            max_attempts = 1
+            if self.config.retry_unparseable:
+                max_attempts += max(0, self.config.max_parse_retries)
+                if self.config.use_minimal_reprompt:
+                    max_attempts += 1
 
-            api_kwargs = {
-                "model": self.config.model,
-                "input": input_messages,
-                "max_output_tokens": max_tokens,
-                # "temperature": self.config.temperature if do_sample else 0,
-            }
+            final_output = ""
+            for attempt in range(max_attempts):
+                minimal_reprompt = (
+                    self.config.use_minimal_reprompt
+                    and attempt == max_attempts - 1
+                    and max_attempts > 1
+                )
+                attempt_messages = input_messages
+                if minimal_reprompt:
+                    attempt_messages = input_messages + [
+                        {"role": "user", "content": "Answer exactly True or False."}
+                    ]
 
-            if instructions is not None:
-                api_kwargs["instructions"] = instructions
+                api_kwargs = {
+                    "model": self.config.model,
+                    "input": attempt_messages,
+                    "max_output_tokens": max_tokens,
+                    # "temperature": self.config.temperature if do_sample else 0,
+                }
 
-            if thinking_mode:
-                api_kwargs["reasoning"] = {"effort": self.config.reasoning_effort}
+                if instructions is not None:
+                    api_kwargs["instructions"] = instructions
 
-            api_response = completion_with_backoff(self.client, **api_kwargs)
-            outputs.append(api_response.output_text)
+                api_kwargs["reasoning"] = {
+                    "effort": self.config.reasoning_effort
+                    if thinking_mode
+                    else "none"
+                }
+
+                api_response = completion_with_backoff(self.client, **api_kwargs)
+                final_output = api_response.output_text
+                parsed_label = read_labels_from_answer(final_output)
+                self.log_api_response(
+                    prompt_index=prompt_index,
+                    attempt=attempt,
+                    minimal_reprompt=minimal_reprompt,
+                    output_text=final_output,
+                    parsed_label=parsed_label,
+                    api_response=api_response,
+                )
+
+                if not self.should_retry_answer(final_output):
+                    break
+
+                print(
+                    "Retrying OpenAI response because it was empty or unparseable "
+                    f"(prompt {prompt_index}, attempt {attempt + 1}/{max_attempts})."
+                )
+
+            outputs.append(final_output)
 
         return outputs
 
