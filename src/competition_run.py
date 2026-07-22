@@ -1,42 +1,28 @@
-"""Single competition run using the settings in config.yaml.
+"""Competition run using the settings in config.yaml.
 
-Runs the config.yaml prompting-strategy configuration (prompt_mode,
-demonstration_mode/size, embedding_mode, retrieval_mode, thinking_mode) and writes one result CSV.
+Variant of run_all.py for the final competition submission:
+  - trains on the full data/def_train.csv (no cross-validation),
+  - classifies the unlabelled data/def_test.csv (no DEF column, so the
+    result CSV has no ground-truth column either),
+  - additionally respects the optional 'ratio' (balanced/proportional class
+    balance of demonstrations) and 'order' (demonstration ordering) config
+    parameters; both default to the standard behaviour (balanced, random)
+    when not set.
+
+The result CSV is written to {results_path} using the standard filename
+format (without a fold suffix); make_submission.py converts it into the
+required submission format.
 
 Requires the HF_TOKEN environment variable for HuggingFace Hub access.
 """
 
-import json
 import os
-from datetime import datetime
 
 import pandas as pd
 import yaml
 from huggingface_hub import login
-from tqdm import tqdm
 
 import util
-
-
-
-def result_filename(cfg: dict) -> str:
-    """Build the result filename:
-    {model}_{prompt}_{demo_mode}_{demo_size}_{embedding}_{retrieval}[_thinking].csv
-
-    None values appear literally as "None".
-    """
-    model_short = cfg["model_name"].split("/")[-1]
-    thinking_suffix = "_thinking" if cfg["thinking_mode"] else ""
-
-    return (
-        f"{model_short}_"
-        f"{cfg['prompt_mode']}_"
-        f"{cfg['demonstration_mode']}_"
-        f"{cfg['demonstration_size']}_"
-        f"{cfg['embedding_mode']}_"
-        f"{cfg['retrieval_mode']}_"
-        f"{thinking_suffix}.csv"
-    )
 
 
 def main():
@@ -53,13 +39,10 @@ def main():
     annotations = pd.read_csv(config["data_path"] + "/single_step_annotation.csv")
     test = pd.read_csv(config["data_path"] + "/def_test.csv", sep=";")
 
+    # The largest model only fits alongside the embedding model when quantised
+    quantisation = model_name == "google/gemma-4-26B-A4B-it"
 
-    quantisation = True if model_name == "google/gemma-4-26B-A4B-it" else False
-
-
-    output_filename = result_filename(config)
-    output_path = os.path.join(config["results_path"], output_filename)
-
+    output_path = os.path.join(config["results_path"], util.result_filename(config))
 
     # Build the demonstration pool for few-shot prompting; zero-shot runs
     # (demonstration_size == 0) need no knowledge base.
@@ -76,68 +59,24 @@ def main():
 
     pc = util.PromptConstructor(kb, config)
 
-    lm = util.LM(model_name,quantisation)
+    lm = util.LM(model_name, quantisation)
+
+    # Optional ablation parameters; absent keys mean the standard behaviour
+    order = config.get("order") or "random"
+    if config.get("ratio") == "proportional":
+        demo_ratio = util.proportional_demo_ratio(train["DEF"], config["demonstration_size"])
+    else:
+        demo_ratio = None  # balanced k/2 : k/2 split
 
     if config["prompt_mode"] == "explicit":
         # Multi-step pipeline: one inference call per legal decision step,
-        # with early stopping per explicit_decisions.yaml. Returns a finished
-        # results frame (id, text, labels, reply, ...).
-        all_replies = util.multi_step_generation(test, lm, pc, config)
-
-        # Serialize the chat-format prompts so the CSV stays one row per
-        # test instance.
-        all_replies["prompt"] = all_replies["prompt"].apply(
-            lambda x: json.dumps(x, ensure_ascii=False) if x is not None else None
-        )
-        all_replies.to_csv(output_path, index=False)
-
+        # with early stopping per explicit_decisions.yaml. The per-step
+        # retrieval has no ratio support, so only the ordering is passed on.
+        results = util.multi_step_generation(test, lm, pc, config, order=order)
     else:
-        # Single-step modes: build one prompt per test instance (includes
-        # demonstration retrieval if configured).
-        if config["embedding_mode"] is not None:
-            print(f"Retrieving demonstrations {datetime.now()}...")
+        results = util.single_step_generation(test, lm, pc, config, order=order, ratio=demo_ratio)
 
-        if config["ratio"] == "proportional":
-
-            num_neg = int(max(1,round(config["demonstration_size"]*len(train[train["DEF"]==False])/len(train),0)))
-            num_pos = int(max(1,round(config["demonstration_size"]*len(train[train["DEF"]==True])/len(train),0)))
-
-            diff = config["demonstration_size"] - (num_neg+num_pos)
-            if diff == 1:
-                num_pos += 1 if min(num_pos,num_neg) == num_pos else 0
-                num_neg += 1 if min(num_pos,num_neg) == num_neg else 0
-            if diff == -1:
-                num_pos -=1 if max(num_pos,num_neg) == num_pos else 0
-                num_neg -=1 if max(num_neg,num_pos) == num_neg else 0
-
-            demo_ratio_train = {"neg":num_neg,"pos":num_pos}
-
-            assert demo_ratio_train["neg"] + demo_ratio_train["pos"] == config["demonstration_size"], "Demo ratio does not add up to set demonstration size"
-        else:
-            demo_ratio_train = None
-        
-
-        prompts = [pc.construct(text,order = config["order"],ratio=demo_ratio_train) for text in tqdm(test["description"])]
-
-        print(f"Classifying {datetime.now()}...")
-        generated_answers = lm.generate(
-            prompts,
-            max_tokens=config["max_tokens"],
-            thinking_mode=config["thinking_mode"],
-        )
-        # Parse True/False from each reply; None marks an abstention
-        # (excluded later by evaluate.py).
-        y_pred = [util.read_labels_from_answer(a) for a in generated_answers]
-
-        pd.DataFrame({
-            "id": test["id"],
-            "description": test["description"],
-            #"DEF": test["DEF"],
-            "predicted_label": y_pred,
-            "reply": generated_answers,
-            "prompt": [json.dumps(p, ensure_ascii=False) for p in prompts],
-        }).to_csv(output_path, index=False)
-
+    results.to_csv(output_path, index=False)
     print(f"Results saved to {output_path}")
 
 

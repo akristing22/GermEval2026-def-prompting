@@ -1,9 +1,0 @@
-model,prompt_mode,demo_mode,demo_size,embedding_mode,retrieval_mode,thinking_mode,fold,n_scored,n_abstained,accuracy,f1_macro,precision_true,recall_true,precision_false,recall_false
-gpt-5.5-2026-04-23,explicit,dynamic,8,dense,similarity,False,3,261,554,0.9502,0.8009,0.6875,0.5789,0.9673,0.9793
-gpt-5.5-2026-04-23,explicit,dynamic,8,dense,similarity,False,1,293,523,0.9386,0.7585,0.44,0.7333,0.9851,0.9496
-gpt-5.5-2026-04-23,explicit,dynamic,8,dense,similarity,False,2,306,510,0.9248,0.735,0.4138,0.6667,0.9783,0.941
-gpt-5.5-2026-04-23,explicit,dynamic,8,dense,similarity,False,0,291,525,0.9278,0.7114,0.45,0.4737,0.9631,0.9596
-gpt-5.5-2026-04-23,title,None,0,None,None,False,0,816,0,0.4681,0.4428,0.1933,1.0,1.0,0.3904
-gpt-5.5-2026-04-23,title,None,0,None,None,False,1,816,0,0.4645,0.4399,0.1922,1.0,1.0,0.3862
-gpt-5.5-2026-04-23,title,None,0,None,None,False,2,816,0,0.462,0.4379,0.1915,1.0,1.0,0.3834
-gpt-5.5-2026-04-23,title,None,0,None,None,False,3,815,0,0.4626,0.4378,0.1904,1.0,1.0,0.3848

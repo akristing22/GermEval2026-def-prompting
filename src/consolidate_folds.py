@@ -1,50 +1,67 @@
 """Merge per-fold result CSVs into one CSV per experiment configuration.
 
-run_all.py writes one result file per config and fold
-({config}_fold-N.csv, N = 0..3). For evaluation across the whole dataset the
-four folds of each config are concatenated here into a single CSV (every post
-appears exactly once, since each fold's test split is disjoint) and written to
-{RESULTS_DIR}/consolidated/{config}.csv.
+The experiment scripts write one result file per config and fold
+({config}_fold-N[_thinking].csv, N = 0..3). For evaluation across the whole
+dataset the folds of each config are concatenated here into a single CSV
+(every post appears exactly once, since each fold's test split is disjoint)
+and written to {results_dir}/consolidated/{config}.csv.
 
-Run from src/; expects the fold files in ../results/final_run/. The
-subdirectory "consolidated" is created automatically if it does not exist.
+Usage (from src/):
+    python consolidate_folds.py                       # ../results/final_run
+    python consolidate_folds.py ../results/ablations/balance_X_order
+
+The consolidated/ subfolder is created automatically if it does not exist.
 """
 
-import pandas as pd
+import argparse
 import os
+import re
+from collections import defaultdict
+
+import pandas as pd
 from tqdm import tqdm
 
-RESULTS_DIR = "../results/ablations/static"
-CONSOLIDATED_DIR = os.path.join(RESULTS_DIR,"consolidated")
+DEFAULT_RESULTS_DIR = "../results/ablations/static"
+
+# "_fold-N" sits before an optional "_thinking" suffix, so it is removed
+# wherever it appears rather than only at the end of the name
+_FOLD_PATTERN = re.compile(r"_fold-(\d+)")
+
 
 def main():
+    parser = argparse.ArgumentParser(description=__doc__,
+                                     formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("results_dir", nargs="?", default=DEFAULT_RESULTS_DIR,
+                        help=f"directory with per-fold result CSVs (default: {DEFAULT_RESULTS_DIR})")
+    args = parser.parse_args()
 
-    file_names = [f for f in os.listdir(RESULTS_DIR) if f.endswith(".csv")]
-    # Derive the config name by cutting ".csv" and the fold suffix off each
-    # filename. Note: str.strip() removes *characters* (not substrings) from
-    # both ends, so this relies on the config name not ending in one of the
-    # stripped characters; one spec per file means each config appears four
-    # times in the list (once per fold).
-    specs = [s.strip(".csv").strip("_fold-0").strip("_fold-1").strip("_fold-2").strip("_fold-3") for s in file_names if "score_table" not in s]
+    consolidated_dir = os.path.join(args.results_dir, "consolidated")
+    os.makedirs(consolidated_dir, exist_ok=True)
 
-    if not os.path.exists(CONSOLIDATED_DIR):
-        os.makedirs(CONSOLIDATED_DIR)
+    # Group the fold files by their config name (the filename without the
+    # fold suffix); non-fold CSVs (score tables, already-consolidated files)
+    # are left alone
+    fold_files = defaultdict(list)
+    for filename in sorted(os.listdir(args.results_dir)):
+        if not filename.endswith(".csv") or "score_table" in filename:
+            continue
+        spec, n_subs = _FOLD_PATTERN.subn("", filename.removesuffix(".csv"), count=1)
+        if n_subs == 1:
+            fold_files[spec].append(filename)
 
-    for spec in tqdm(set(specs)):
-        # Collect all fold files belonging to this config via prefix match
-        spec_files = [f for f in file_names if f.startswith(spec)]
-        dfs = []
-        for f in spec_files:
-            dfs.append(pd.read_csv(os.path.join(RESULTS_DIR,f)))
-
-        print(len(dfs))
+    for spec, filenames in tqdm(fold_files.items()):
+        if len(filenames) != 4:
+            print(f"Warning: {spec} has {len(filenames)} fold files (expected 4)")
 
         # Concatenate the disjoint test splits into one full-dataset result
-        df = pd.concat(dfs,ignore_index=True)
+        df = pd.concat(
+            (pd.read_csv(os.path.join(args.results_dir, f)) for f in filenames),
+            ignore_index=True,
+        )
+        df.to_csv(os.path.join(consolidated_dir, spec + ".csv"), index=False)
 
-        df.to_csv(os.path.join(CONSOLIDATED_DIR,
-                               spec+".csv"
-                               ),index=False)
+    print(f"{len(fold_files)} configs consolidated into {consolidated_dir}")
+
 
 if __name__ == "__main__":
     main()

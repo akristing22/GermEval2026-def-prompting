@@ -1,6 +1,6 @@
 model,prompt_mode,demo_mode,demo_size,embedding_mode,retrieval_mode,thinking_mode,n_scored,n_abstained,accuracy,f1_macro,cohen_kappa,precision_true,recall_true,precision_false,recall_false
-gpt-5.5-2026-04-23,explicit,dynamic,8,dense,similarity,False,1151,2112,0.9348,0.7496,0.4997,0.4778,0.6056,0.9736,0.9565
 gemma-4-E4B-it-qlora,implicit,None,0,None,None,False,3263,0,0.9044,0.7405,0.4844,0.702,0.4313,0.9215,0.9733
+gpt-5.5-2026-04-23,explicit,dynamic,8,dense,similarity,False,3263,0,0.8339,0.7163,0.4424,0.415,0.747,0.9583,0.8466
 gpt-5.5-2026-04-23,title,None,0,None,None,False,3263,0,0.4643,0.4396,0.138,0.1919,1.0,1.0,0.3862
 gemma-4-26B-A4B-it,implicit,dynamic,8,dense,similarity,False,3263,0,0.8495,0.7325,0.4718,0.4449,0.7398,0.958,0.8655
 gemma-4-26B-A4B-it,implicit,dynamic,8,dense,mmr,False,3263,0,0.8409,0.7232,0.4547,0.4278,0.7422,0.9579,0.8553

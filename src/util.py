@@ -7,9 +7,12 @@ This module provides:
   - KnowledgeBase: retrieval store for few-shot demonstration examples (dense, sparse, fusion)
   - MultiStepKnowledgeBase: per-step retrieval stores for the 'explicit' multi-step pipeline
   - PromptConstructor: builds chat-formatted prompts, optionally with retrieved demonstrations
-  - Helpers for config validation, data loading, label extraction, and multi-step generation
+  - single_step_generation / multi_step_generation: the two classification pipelines
+  - Helpers shared by all runner scripts: config validation, data loading,
+    label extraction, result filenames, proportional demonstration ratios
 """
 
+import json
 import os
 import random
 import re
@@ -20,7 +23,6 @@ import numpy as np
 import pandas as pd
 import torch
 import yaml
-import math
 from huggingface_hub import repo_exists
 from langchain_community.retrievers import BM25Retriever
 from langchain_core.documents import Document
@@ -40,25 +42,6 @@ os.environ["PYTORCH_ALLOC_CONF"] = "expandable_segments:True"
 # ---------------------------------------------------------------------------
 # Language Model
 # ---------------------------------------------------------------------------
-
-class LM_API:
-
-    """
-    Wrapper for an external API-based language model. Not implemented yet.
-    """
-
-    def __init__(self,api_config:dict):
-        raise NotImplementedError("LM_API is not implemented yet.")
-    
-    def generate(
-            self,
-            prompts:list[list[dict[str,str]]],
-            max_tokens=10,
-            thinking_mode=False
-            ) -> list[str]:
-        # TODO
-        pass
-
 
 class LM:
     """
@@ -121,20 +104,23 @@ class LM:
             torch.cuda.mem_get_info(device)[0]
             for device in range(torch.cuda.device_count()))
 
+        # Multimodal wrappers nest the text model's dimensions in text_config
+        model_config = self.model.config
+        if "num_hidden_layers" not in model_config and "text_config" in model_config:
+            model_config = model_config.text_config
+
+        if "num_hidden_layers" not in model_config or "hidden_size" not in model_config:
+            raise RuntimeError(
+                f"Cannot estimate KV-cache size for {self.model_name}: its config "
+                "exposes neither num_hidden_layers/hidden_size nor a text_config."
+            )
+
         # Estimate KV-cache capacity: each token occupies
         # 2 (key+value) × 2 bytes (bfloat16) × num_layers × hidden_size bytes
         # Reference: https://www.baseten.co/blog/llm-transformer-inference-guide/#3500759-estimating-total-generation-time-on-each-gpu
-        if "num_hidden_layers" in self.model.config and "hidden_size" in self.model.config:
-            self.kv_cache_tokens = (
-                free_memory
-                /(2 * 2 * self.model.config.num_hidden_layers * self.model.config.hidden_size))
-        elif "text_config" in self.model.config and "num_hidden_layers" in self.model.config.text_config and "hidden_size" in self.model.config.text_config:
-            self.kv_cache_tokens = (
-                free_memory
-                /(2 * 2 * self.model.config.text_config.num_hidden_layers * self.model.config.text_config.hidden_size))
-
-
-
+        self.kv_cache_tokens = (
+            free_memory
+            / (2 * 2 * model_config.num_hidden_layers * model_config.hidden_size))
 
     def get_batches(self,prompts,max_tokens):
         """
@@ -221,8 +207,10 @@ class LM:
 
         input_length = inputs['input_ids'].shape[1]  # prompt length
 
-        # handle OOM errors by splitting batch in half and recursively calling get_ouput
-        oom = False
+        # CUDA out-of-memory surfaces as a generic RuntimeError. The recovery
+        # (halving the batch) must happen *outside* the except block: while it
+        # is active, the exception's traceback pins the failed generate() call's
+        # stack frames — and with them its GPU allocations.
         try:
             generated_ids = self.model.generate(
                 **inputs,
@@ -235,23 +223,22 @@ class LM:
             return self.tokenizer.batch_decode(new_tokens, skip_special_tokens=True)
 
         except RuntimeError as e:
-            # handle CUDA out-of-memory by halving the batch
             print(e)
+            if len(batch) == 1:
+                # A single prompt that still does not fit cannot be split any
+                # further — return an empty reply to keep outputs aligned
+                print("Warning: inference failed for one sample that does not fit into GPU memory")
+                return [""]
             print("OOM error — splitting batch in half and retrying...")
-            oom = True
 
-        if oom:
-            # Split the batch in half and generate output for each half separately
-            mid = len(batch) // 2
-            return self.get_output(
-                batch[:mid],
-                max_tokens=max_tokens,
-                thinking_mode=thinking_mode
-                ) + self.get_output(
-                    batch[mid:],
-                    max_tokens=max_tokens,
-                    thinking_mode=thinking_mode
-                    )
+        # Each half is re-tokenized in the recursive call, so the full-batch
+        # tensors can be released before retrying
+        del inputs
+        mid = len(batch) // 2
+        return (
+            self.get_output(batch[:mid], max_tokens=max_tokens, thinking_mode=thinking_mode)
+            + self.get_output(batch[mid:], max_tokens=max_tokens, thinking_mode=thinking_mode)
+        )
 
     def generate(
             self,
@@ -300,7 +287,7 @@ class KnowledgeBase:
 
     Demonstration selection modes:
       - dynamic : retrieve examples per query text at inference time
-      - static  : return a fixed, pre-optimised set of examples (not implemented yet)
+      - static  : return a fixed, pre-optimised set of examples
 
     Retrieval modes for dynamic selection:
       - similarity : retrieve most similar examples (cosine similarity for dense, BM25 score for sparse)
@@ -328,22 +315,27 @@ class KnowledgeBase:
     def update_config(self,config):
         """
         Adopt the retrieval-related settings of a (changed) config without
-        re-indexing the data. Loads the embedding model on first call;
-        subsequent calls (and knowledge bases sharing the model) reuse it.
+        re-indexing the data. Loads the embedding model on first call for
+        dynamic mode; subsequent calls (and knowledge bases sharing the
+        model) reuse it.
         """
         self.embedding_mode = config["embedding_mode"]
         self.demonstration_size = config["demonstration_size"]
         self.demonstration_mode = config["demonstration_mode"]
         self.retrieval_mode = config["retrieval_mode"]
         self.prompt_mode = config["prompt_mode"]
+        self.embedding_model_name = config["embedding_model"]
+        self.template_path = config["template_path"]
         # Keep the BM25 retrievers in sync with a changed demonstration size
         # (the diversity clusters stay fixed at their build-time size)
         if getattr(self, "built", False):
             self.retriever_hate.k = self.demonstration_size//2
             self.retriever_non_hate.k = self.demonstration_size//2
-        if self.embedding_model is None:
+        # Only dynamic mode embeds the training data (dense index + KMeans
+        # clusters); static demonstrations never need the embedding model
+        if self.embedding_model is None and self.demonstration_mode == "dynamic":
             self.embedding_model = HuggingFaceEmbeddings(
-                model_name=config["embedding_model"],
+                model_name=self.embedding_model_name,
                 model_kwargs={"device": "cuda"})
 
 
@@ -369,6 +361,14 @@ class KnowledgeBase:
                 ]
 
         if self.demonstration_mode == "dynamic":
+
+            # Lazy fallback: the embedding model is not loaded at construction
+            # time when the knowledge base starts out non-dynamic (see
+            # update_config) but is required for all dynamic index structures
+            if self.embedding_model is None:
+                self.embedding_model = HuggingFaceEmbeddings(
+                    model_name=self.embedding_model_name,
+                    model_kwargs={"device": "cuda"})
 
             # Dense index: one vector store over both classes; class filtering
             # happens at query time via a metadata filter
@@ -419,12 +419,14 @@ class KnowledgeBase:
 
             if self.prompt_mode == "title":
 
-                self.static_demonstrations = {'heil hitler du nuttensohn':True,'merkel muß weg ! sonst ist Deutschland ...unsere Heimat verloren ! Was diese hirnverbrannte schon angerichtet hat ist icht mehr hinnehmbar....warten bis zur nächsten Bundestagswahl ...da kann alles zu spät sein ....Das Ausmaß dieser katastrophalen Asyl Politik ist jetzt schon nicht mehr überschaubar . Gott sei uns gnädig !':False,'Hat ein Neger das Recht soetwas zu sagen ..also bitte wo sind wir denn gelandet..':True,'@DirkderKaiser @IQ_Stimulator 1933 hat man das mit den Juden gemacht, dass zeigt das die deutschen aus der Geschichte nichts gelernt haben! Wann öffnet Dachau wieder?😡😡😡':True,'@tagesschau Öffentlich-rechtlichen Nazi Medien und Merkel Vasallen setzten ihre Hetzkampagne gegen den Präsidenten der Vereinigten Staaten fort!!':True,'@IQ_Stimulator @krippmarie So ein Mist aber auch...da kämpft die Jugendkammer mit allen Mitteln ihn doch nach Jugendstrafrecht zu verurteilen und da kommt der dämliche Vater und ruiniert alles...😃😃😃':False,'Deutschland gehört uns und nicht den Schmarotzerflüchtlingen die unser Land mit ihrem Anwesen hier verpesten, Kohle mehr erhalten  als Hartz IV Empfänger, unsere Güter die von unseren Steuergeldern bezahlt werden zerstören und den Müll aus den Etagen einfach runterballern, Bürger des Deutschen Staates beleidigen, schlagen und noch in Youtube einstellen. Dieses ganze primitive Affenvolk gehört wieder dahin geschickt wo sie hergekommen sind. Aber nicht in Fliegern sondern so wie sie hergekommen sind. In diesem Sinne ......':True,'Lara Schmid ,falsch sie meinten bildung ist wenns keine einbildung ist sie klugscheißerin. stecken sie ihren hals wieder in ihr refugeesdreckloch in münchen wo sie gerade rausgekommen sind. sie sind hier nicht welcome und bei den meisten münchener sicher auch nicht':True}
+                with open(os.path.join(self.template_path,"static_title.yaml")) as stream:
+                    self.static_demonstrations = yaml.safe_load(stream)
+
 
             elif self.prompt_mode == "implicit":
 
-                self.static_demonstrations = {'Ja mein Freund,denn Pegida wird wachsen ! Deine Rechnerei kannste den Weihnachtsmann vorgaukeln. Ich bin heilfroh das es endlich mal gegen die bescheuerte Politik geht.Ich brauche keine Moscheen und auch keinen Islam,denn ich bin Deutscher und das will ich bleiben! Alles klar!':False,'Gott seid ihr blöd... #pegidioten':False,'Wer sich fragt warum immer wieder ein Neuaufguss von Auschwitz und Co kommt.... frei nach dem Motto... deine Vorfahren waren ganz böse.... usw. in Japan erforscht man das... Ausrottung der Deutschen hier einige Beispiele von unseren tollen Politikern....   ... interessant, wer hier in Deutschland Politik macht und sich auch noch dafür vom deutschen Volk bezahlen lässt! ACHTUNG ... manches hier kann zu Übelkeit führen!\r\nZitate:\r\nJoschka Fischer: „Deutschland ist ein Problem, weil die Deutschen fleißiger, disziplinierter und begabter als der Rest Europas sind. Das wird immer wieder zu ‘Ungleichgewichten’ führen. Dem kann aber gegengesteuert werden, indem so viel Geld wie nur möglich aus Deutschland herausgeleitet wird. Es ist vollkommen egal wofür, es kann auch radikal verschwendet werden – Hauptsache, die Deutschen haben es nicht. Schon ist die Welt gerettet.“\r\nCem Özdemir, derzeit Bundesvorsitzender der Partei “Bündnis 90/ Die Grünen” im Bundestag mit deutschem Pass, in einem Interview mit dem „Tagesspiegel“ auf die Frage; wie er sich die Zukunft vorstellt?\r\n„In Zwanzig Jahren haben wir eine Grüne Bundeskanzlerin und ich berate die türkische Regierung bei der Frage, wie sie ihre Probleme mit der deutschen Minderheit an der Mittelmeerküste in den Griff bekommt.“\r\nJürgen Trittin, Grüner Vorsitzender und ehemaliger Umweltminister: „Noch nie habe ich die deutsche Nationalhymne mitgesungen und ich werde es als Minister auch nicht tun.“ (Quelle: FAZ vom 02. 01. 2005)\r\nNochmals Joschka Fischer, Bündnis 90/ Die Grünen: „Deutschland muss von außen eingehegt und von innen durch Zustrom von Ausländern heterogenisiert, quasi verdünnt, werden.“ (Rezension zu Joschka Fischers Buch „Risiko Deutschland” - von Miriam Lau)\r\n“Deutschland verschwindet jeden Tag immer mehr, und das finde ich einfach großartig.” Jürgen Trittin,\r\n„Deutsche sind ‚Nicht-Migranten‘ - mehr nicht! …die Türkei ist zweite Heimat für mich, ich mache seit 20 Jahren Türkei-Politik.“ (Videoquelle) Claudia Roth, Vorstand Bündnis 90 / Die Grünen und Dt. Bundestagsabgeordnete\r\nSinngemäße Aussage von Cem Özdemir, Bündnis 90 / Die Grünen, auf Behauptung von Susanne Zeller-Hirzel, der letzten Überlebende der Weißen Rose, einer Widerstandsgruppe im sog. Dritten Reich: „Wir wollen, dass Deutschland islamisch wird!“ (Videoquelle)\r\nM. Walid Nakschbandi, “Deutscher Staatsbürger” afghanischer Herkunft und Geschäftsführer der Fernsehproduktionsfirma AVE: „Wir kennen Euren inneren Zustand. Dafür haben wir einen Blick und die nötige Sensibilität. Und da wir Euch kennen, werden wir uns auf Euch nicht mehr verlassen. Wir gehen unseren Weg und der ist schmerzlich und voller Dornen, aber am Ende erfolgreich… . Ihr habt nur die Chance, mit uns zu leben. Ein Leben ohne uns wird es für Euch nicht mehr geben. Die Ibrahims, Stefanos, Marios, Laylas und Sorayas sind deutsche Realität.... . Ihr werdet es nicht verhindern können, dass bald ein türkisch stämmiger Richter über Euch das Urteil fällt, ein pakistanischer Arzt Eure Krankheiten heilt, ein Tamile im Parlament Eure Gesetze mit verabschiedet…. Nicht Ihr werdet die Gesellschaft modernisieren… und humanisieren, sondern wir werden es tun für Euch! - Ihr seid bei diesem leidvollen Prozess lediglich Zaungäste, lästige Gaffer! Wir werden die deutsche Gesellschaft in Ost und West verändern!“\r\nDer Vorstand von “Bündnis 90 / Die Grünen” kürzlich in München: „Es geht nicht um Recht oder Unrecht in der Einwanderungsdebatte, uns geht es zuerst um die Zurückdrängung des deutschen Bevölkerungsanteils in diesem Land!“\r\n“Das Problem ist nicht Sarrazin selbst als Person, sondern der gleichgesinnte Bevölkerungsanteil in Deutschland. ” Cem Özdemir, Bündnis 90 /Die Grünen, (Sarrazin hat bis zu 90% Zustimmung in der Bevölkerung.)\r\n“Der deutsche Nachwuchs heißt jetzt Mustafa, Giovanni und Ali!”\r\nCem Özdemir, Bündnis 90/ Die Grünen auf dem Parteitag der Grünen 1998 in Bonn-Bad Godesberg.\r\n“Am Nationalfeiertag der Deutschen ertrinken die Straßen in einem Meer aus roten Türkenflaggen und ein paar schwarzrotgoldenen Fahnen.”\r\nClaudia Roth, Bündnis 90/ Die Grünen, Wunschvision zum Tag der Deutschen Einheit, Artikel in der Welt am Sonntag vom 6.Februar 2005.\r\n“Deutsche sind Nicht-Migranten, mehr nicht!”\r\nClaudia Roth, Bündnis 90/ Die Grünen\r\n“Ich wollte, dass Frankreich bis zur Elbe reicht und Polen direkt an Frankreich grenzt.”- Sieglinde Frieß, Bündnis 90/ Die Grünen vor dem Parlament im Bundestag, (Quelle: FAZ vom 6.9.1989)\r\n“Migration ist in Frankfurt eine Tatsache. Wenn Ihnen das nicht passt, müssen Sie woanders hinziehen.” (Antwort auf die Beschwerde zu Integrationsproblemen von 50 Anwohnern) - Nargess Eskandari-Grünberg, Bündnis90/Die Grünen, in der Frankfurter Rundschau vom 13. November 2007. Augenzeugen sagen, es hieß wörtlich “…dann wandern Sie doch aus!”\r\nSinngemäß: "Wir, die Grünen, müssen dafür sorgen, so viele Ausländer wie möglich nach Deutschland zu holen. Wenn sie in Deutschland sind, müssen wir für ihr Wahlrecht kämpfen. Wenn wir das erreicht haben, werden wir den Stimmenanteil haben, den wir brauchen, um diese Republik zu verändern." Daniel Cohn-Bendit, Bündnis 90/ Die Grünen\r\n“Deutsche Helden müsste die Welt, tollwütigen Hunden gleich, einfach totschlagen.” Joschka Fischer, Bündnis 90/ Die Grünen\r\n“Es geht nicht um Recht oder Unrecht in der Einwanderungsdebatte, uns geht es zuerst um die Zurückdrängung des deutschen Bevölkerungsanteils in diesem Land.” Vorstand der Bündnis 90/ Die Grünen von München."  https://www.youtube.com/watch?v=te_NpUvM8R8':False,'http://www.presseportal.de/blaulicht/pm/19027/3178920 wieder Rudelangriff von Merkels Neudeutschen auf junge Frau':False,'@krippmarie Einweisen ...dafür gibt’s die geschlossenen... |LBR| Und den der diese alte hübsch findet oder gar erotisch....ebenfalls..! |LBR| @SawsanChebli ....im Land ihresgleichen bestimmt der Renner...😃😃':False,'NTV ist genau wie ARD und ZDF Rot Grün versifft anstatt AFD Politiker zu Wort kommen lassen werden unaufhörlich Linke u Grüne zitiert |LBR| AFD':False, 'Bemitleidenswerte Kreaturen':True,'Ja, da gehören doch eigentlich Flüchtinge hin! Man ist doch so für die Buntheit! Wobei es natürlich keine Menschen sein dürfen, die aufgrund ihres Glaubens und ihrer Kultur vielleicht einen allzu kritischen Blick auf die viel beschworenen "Werte" des links-liberalen Westens werfen könnten ...':False}
-        
+                with open(os.path.join(self.template_path,"static_implicit.yaml")) as stream:
+                    self.static_demonstrations = yaml.safe_load(stream)      
 
 
 
@@ -517,14 +519,17 @@ class KnowledgeBase:
 
     def query(self, query: str, demonstration_mode, ratio:dict=None) -> dict[str, bool]:
         """
-        Return a class-balanced set of demonstration examples (both classes).
+        Return a set of demonstration examples covering both classes.
 
         Args:
             query:              The input text used to select relevant demonstrations.
             demonstration_mode: 'dynamic' or 'static'.
+            ratio:              Optional per-class counts {"pos": int, "neg": int}
+                                (must sum to demonstration_size). Defaults to an
+                                equal split between the classes.
 
         Returns:
-            Dict mapping example text → label, with equal representation of each class.
+            Dict mapping example text → label.
         """
 
         if ratio is not None:
@@ -559,8 +564,8 @@ class KnowledgeBase:
             )
 
         elif demonstration_mode == "static":
-            # Pre-optimised fixed demonstration set — not implemented yet
-            # (nothing sets static_demonstrations; see the TODO in build())
+            # Fixed demonstration set selected once in build(); only defined
+            # for the 'title' and 'implicit' prompt modes
             return self.static_demonstrations
 
 # ---------------------------------------------------------------------------
@@ -882,9 +887,9 @@ def validate_config(config:dict, check_model:bool=True) -> dict:
     # --- Parameter range / allowed-value checks ---
     assert config["max_tokens"] > 0, "max_tokens must be a positive integer."
     assert config["thinking_mode"] in (True, False)
-    assert config["embedding_mode"] in ("dense", "sparse", "fusion", None, None)
+    assert config["embedding_mode"] in ("dense", "sparse", "fusion", None)
     assert config["prompt_mode"] in ("title", "description", "implicit", "explicit")
-    assert config["demonstration_mode"] in ("dynamic", "static", None, None)
+    assert config["demonstration_mode"] in ("dynamic", "static", None)
     assert config["demonstration_size"] >= 0
     assert config["retrieval_mode"] in ("similarity", "diversity", "mmr", "random", None)
 
@@ -939,6 +944,73 @@ def validate_config(config:dict, check_model:bool=True) -> dict:
 # ---------------------------------------------------------------------------
 
 
+def result_filename(config: dict, fold: int | None = None) -> str:
+    """
+    Build the standard result filename (see CLAUDE.md):
+    {model}_{prompt}_{demo_mode}_{demo_size}_{embedding}_{retrieval}[_fold-N][_thinking].csv
+
+    None values appear literally as "None". The model name is shortened to the
+    part after the last "/" of the HuggingFace repo id.
+
+    Args:
+        config: Pipeline configuration dictionary.
+        fold:   Cross-validation fold index; omitted from the name when None
+                (e.g. competition runs without CV).
+    """
+    model_short = config["model_name"].split("/")[-1]
+    fold_suffix = f"_fold-{fold}" if fold is not None else ""
+    thinking_suffix = "_thinking" if config["thinking_mode"] else ""
+
+    return (
+        f"{model_short}_"
+        f"{config['prompt_mode']}_"
+        f"{config['demonstration_mode']}_"
+        f"{config['demonstration_size']}_"
+        f"{config['embedding_mode']}_"
+        f"{config['retrieval_mode']}"
+        f"{fold_suffix}"
+        f"{thinking_suffix}.csv"
+    )
+
+
+def proportional_demo_ratio(labels: pd.Series, demonstration_size: int) -> dict[str, int]:
+    """
+    Per-class demonstration counts that mirror the class distribution of the
+    train split (used by runs with ratio == 'proportional').
+
+    Each class gets at least one demonstration. Because the two per-class
+    counts are rounded independently, their sum can be one off — in that case
+    a single count is adjusted so the total is exactly demonstration_size.
+
+    Args:
+        labels:             Binary labels of the train split (the DEF column).
+        demonstration_size: Total number of demonstrations (k).
+
+    Returns:
+        {"pos": <count for True>, "neg": <count for False>}
+    """
+    num_neg = int(max(1, round(demonstration_size * (labels == False).sum() / len(labels))))
+    num_pos = int(max(1, round(demonstration_size * (labels == True).sum() / len(labels))))
+
+    diff = demonstration_size - (num_pos + num_neg)
+    if diff == 1:
+        # One short: top up the under-represented class
+        if num_pos <= num_neg:
+            num_pos += 1
+        else:
+            num_neg += 1
+    elif diff == -1:
+        # One over: take it from the over-represented class
+        if num_pos >= num_neg:
+            num_pos -= 1
+        else:
+            num_neg -= 1
+
+    assert num_pos + num_neg == demonstration_size, (
+        "Demo ratio does not add up to set demonstration size")
+    return {"pos": num_pos, "neg": num_neg}
+
+
 def read_labels_from_answer(answer:str) -> bool | None:
     """
     Extract a binary True/False label from a free-text model answer via
@@ -979,8 +1051,65 @@ def load_data(file_path: str) -> tuple[pd.DataFrame,pd.DataFrame]:
 
 
 # ---------------------------------------------------------------------------
-# Multi-step (chain-of-thought) generation pipeline
+# Generation pipelines
 # ---------------------------------------------------------------------------
+
+
+def single_step_generation(
+        test: pd.DataFrame,
+        lm: LM,
+        pc: PromptConstructor,
+        config: dict,
+        order: str = "random",
+        ratio: dict | None = None,
+        ) -> pd.DataFrame:
+    """
+    Run the single-prompt classification pipeline ('title', 'description',
+    'implicit') over the test set: build one prompt per instance (including
+    demonstration retrieval if configured), generate, and parse the labels.
+
+    Args:
+        test:   Test DataFrame with "id" and "description" columns; a "DEF"
+                column is carried over when present (absent for the
+                unlabelled competition test set).
+        lm:     Loaded LM instance for text generation.
+        pc:     PromptConstructor for a single-step prompt mode.
+        config: Pipeline configuration dictionary.
+        order:  Demonstration ordering ('random', 'true_first', 'true_last').
+        ratio:  Optional per-class demonstration counts (see proportional_demo_ratio).
+
+    Returns:
+        DataFrame with id, description, [DEF,] predicted_label (None where the
+        model's reply was ambiguous), reply, and the JSON-serialised prompt.
+        Persisting the result is left to the caller.
+    """
+    if config["embedding_mode"] is not None:
+        print(f"Retrieving demonstrations {datetime.now()}...")
+    prompts = [pc.construct(text, order=order, ratio=ratio) for text in tqdm(test["description"])]
+
+    # Re-estimate the batch size from the GPU memory that is free right now
+    # (the embedding model may have been loaded since the LM was)
+    lm.update_kv_cache()
+
+    print(f"Classifying {datetime.now()}...")
+    generated_answers = lm.generate(
+        prompts,
+        max_tokens=config["max_tokens"],
+        thinking_mode=config["thinking_mode"],
+    )
+    y_pred = [read_labels_from_answer(a) for a in generated_answers]
+
+    results = pd.DataFrame({
+        "id": test["id"],
+        "description": test["description"],
+        "predicted_label": y_pred,
+        "reply": generated_answers,
+        # Serialise the chat-format prompts so the CSV stays one row per instance
+        "prompt": [json.dumps(p, ensure_ascii=False) for p in prompts],
+    })
+    if "DEF" in test.columns:
+        results.insert(2, "DEF", test["DEF"])
+    return results
 
 
 def multi_step_generation(
@@ -1010,10 +1139,10 @@ def multi_step_generation(
         config: Pipeline configuration dictionary.
 
     Returns:
-        A copy of the test DataFrame extended with the last step's "prompt",
-        per-step label and reply columns (stepN, stepN_reply), and the final
-        "predicted_label" (None where the model's reply was ambiguous).
-        Persisting the result is left to the caller.
+        A copy of the test DataFrame extended with the last step's prompt
+        (JSON-serialised), per-step label and reply columns (stepN,
+        stepN_reply), and the final "predicted_label" (None where the model's
+        reply was ambiguous). Persisting the result is left to the caller.
     """
 
     # Load the per-step decision logic (maps True/False label → "continue" | final label)
@@ -1083,6 +1212,10 @@ def multi_step_generation(
                     print(f"Ambiguous reply at step {step}, row {i}: '{row[f'{step}_reply']}'")
                     all_replies.loc[i,"continue"] = False
                     all_replies.loc[i,"predicted_label"] = None
+
+    # Serialise the chat-format prompts so the CSV stays one row per instance
+    all_replies["prompt"] = all_replies["prompt"].apply(
+        lambda x: json.dumps(x, ensure_ascii=False) if x is not None else None)
 
     return all_replies
 

@@ -1,0 +1,129 @@
+\begin{longtable}{lllrrrrr}
+\caption{Full results for all 112 configurations, sorted by $F1_{macro}$ (descending). P$_\mathsf{T}$/R$_\mathsf{T}$: precision/recall for the prosecutable class.}\label{tab:d-full}\\
+\toprule
+Model & Prompt & Retrieval & F1 & Acc. & P$_\mathsf{T}$ & R$_\mathsf{T}$ \\
+\midrule
+\endfirsthead
+\multicolumn{7}{l}{\small\textit{(continued)}} \\
+\toprule
+Model & Prompt & Retrieval & F1 & Acc. & P$_\mathsf{T}$ & R$_\mathsf{T}$ \\
+\midrule
+\endhead
+\midrule
+\multicolumn{7}{r}{\small\textit{(continued on next page)}} \\
+\endfoot
+\bottomrule
+\endlastfoot
+Gemma-4 26B & Implicit & k=8, D-Sim & 0.733 & 0.850 & 0.445 & 0.740 \\
+Gemma-4 26B & Implicit & k=8, D-MMR & 0.723 & 0.841 & 0.428 & 0.742 \\
+Gemma-4 26B & Implicit & k=8, D-Div & 0.722 & 0.833 & 0.417 & 0.788 \\
+Gemma-4 26B & Implicit & k=8, F-Sim & 0.719 & 0.836 & 0.419 & 0.745 \\
+Gemma-4 26B & Implicit & k=8, Rand & 0.717 & 0.829 & 0.410 & 0.790 \\
+Gemma-4 26B & Desc. & k=8, D-Sim & 0.716 & 0.830 & 0.411 & 0.773 \\
+Gemma-4 26B & Implicit & k=8, S-Sim & 0.714 & 0.830 & 0.409 & 0.761 \\
+Gemma-4 26B & Explicit & k=8, D-MMR & 0.711 & 0.859 & 0.457 & 0.564 \\
+Gemma-4 26B & Desc. & k=8, F-Sim & 0.709 & 0.820 & 0.396 & 0.793 \\
+Gemma-4 26B & Desc. & k=8, D-MMR & 0.709 & 0.821 & 0.397 & 0.785 \\
+Gemma-4 26B & Explicit & k=8, F-Sim & 0.701 & 0.849 & 0.430 & 0.571 \\
+Gemma-4 26B & Explicit & k=8, D-Sim & 0.698 & 0.859 & 0.451 & 0.506 \\
+Gemma-4 26B & Desc. & k=8, S-Sim & 0.697 & 0.807 & 0.378 & 0.800 \\
+Gemma-4 26B & Desc. & k=8, D-Div & 0.696 & 0.799 & 0.373 & 0.848 \\
+Gemma-4 26B & Title & k=8, D-Div & 0.695 & 0.808 & 0.378 & 0.783 \\
+Gemma-4 26B & Desc. & k=8, Rand & 0.695 & 0.799 & 0.372 & 0.846 \\
+Gemma-4 26B & Title & k=8, D-MMR & 0.693 & 0.811 & 0.377 & 0.749 \\
+Gemma-4 26B & Title & k=8, Rand & 0.692 & 0.805 & 0.373 & 0.781 \\
+Gemma-4 26B & Title & k=8, D-Sim & 0.691 & 0.815 & 0.380 & 0.713 \\
+Gemma-4 26B & Explicit & k=8, D-Div & 0.691 & 0.847 & 0.421 & 0.532 \\
+Gemma-4 26B & Title & k=8, F-Sim & 0.690 & 0.809 & 0.374 & 0.747 \\
+Gemma-4 26B & Title & k=8, S-Sim & 0.686 & 0.803 & 0.366 & 0.757 \\
+Gemma-4 26B & Explicit & k=8, Rand & 0.681 & 0.848 & 0.416 & 0.492 \\
+Gemma-4 26B & Explicit & k=8, S-Sim & 0.676 & 0.836 & 0.392 & 0.523 \\
+Gemma-4 26B & Implicit & ZS & 0.676 & 0.791 & 0.353 & 0.764 \\
+Gemma-4 26B & Desc. & ZS & 0.674 & 0.782 & 0.347 & 0.807 \\
+Gemma-4 E4B & Explicit & k=8, S-Sim & 0.659 & 0.799 & 0.341 & 0.622 \\
+Gemma-4 26B & Explicit & ZS & 0.652 & 0.777 & 0.329 & 0.683 \\
+Gemma-4 E4B & Explicit & k=8, D-Sim & 0.650 & 0.781 & 0.324 & 0.663 \\
+Gemma-4 E4B & Explicit & k=8, Rand & 0.646 & 0.798 & 0.328 & 0.559 \\
+Gemma-4 E4B & Explicit & k=8, F-Sim & 0.644 & 0.777 & 0.317 & 0.653 \\
+Gemma-4 E4B & Explicit & k=8, D-MMR & 0.644 & 0.762 & 0.313 & 0.733 \\
+Gemma-4 E4B & Explicit & k=8, D-Div & 0.640 & 0.792 & 0.319 & 0.559 \\
+Qwen3.5 9B & Explicit & k=8, D-Sim & 0.636 & 0.821 & 0.338 & 0.426 \\
+Gemma-4 26B & Title & ZS & 0.630 & 0.758 & 0.299 & 0.670 \\
+Qwen3.5 9B & Implicit & k=8, Rand & 0.630 & 0.740 & 0.298 & 0.769 \\
+Qwen3.5 9B & Explicit & k=8, D-MMR & 0.628 & 0.818 & 0.326 & 0.407 \\
+Qwen3.5 9B & Explicit & k=8, F-Sim & 0.627 & 0.818 & 0.326 & 0.402 \\
+Qwen3.5 9B & Desc. & k=8, D-Div & 0.626 & 0.752 & 0.294 & 0.677 \\
+Qwen3.5 9B & Desc. & k=8, Rand & 0.626 & 0.749 & 0.293 & 0.689 \\
+Gemma-4 E4B & Desc. & k=8, D-Div & 0.612 & 0.715 & 0.280 & 0.788 \\
+Qwen3.5 9B & Implicit & k=8, D-Div & 0.610 & 0.722 & 0.277 & 0.733 \\
+Gemma-4 E4B & Desc. & k=8, Rand & 0.609 & 0.707 & 0.277 & 0.807 \\
+Qwen3.5 9B & Explicit & k=8, S-Sim & 0.606 & 0.839 & 0.336 & 0.275 \\
+Gemma-4 E4B & Title & k=8, D-Div & 0.600 & 0.706 & 0.267 & 0.747 \\
+Gemma-4 E4B & Title & k=8, D-Sim & 0.600 & 0.706 & 0.267 & 0.749 \\
+Qwen3.5 9B & Explicit & ZS & 0.598 & 0.811 & 0.286 & 0.325 \\
+Gemma-4 E4B & Desc. & k=8, D-Sim & 0.598 & 0.697 & 0.266 & 0.788 \\
+Qwen3.5 9B & Implicit & k=8, F-Sim & 0.597 & 0.705 & 0.264 & 0.737 \\
+Qwen3.5 9B & Implicit & k=8, D-MMR & 0.597 & 0.702 & 0.265 & 0.754 \\
+Qwen3.5 9B & Implicit & k=8, S-Sim & 0.597 & 0.708 & 0.263 & 0.723 \\
+Gemma-4 E4B & Desc. & ZS & 0.597 & 0.706 & 0.263 & 0.733 \\
+Qwen3.5 9B & Implicit & k=8, D-Sim & 0.597 & 0.709 & 0.263 & 0.711 \\
+Gemma-4 E4B & Title & k=8, F-Sim & 0.597 & 0.695 & 0.265 & 0.793 \\
+Gemma-4 E4B & Desc. & k=8, F-Sim & 0.594 & 0.685 & 0.265 & 0.831 \\
+Qwen3.5 9B & Desc. & k=8, S-Sim & 0.593 & 0.715 & 0.258 & 0.660 \\
+Gemma-4 E4B & Explicit & ZS & 0.588 & 0.795 & 0.264 & 0.340 \\
+Gemma-4 E4B & Title & k=8, S-Sim & 0.582 & 0.686 & 0.250 & 0.735 \\
+Gemma-4 E4B & Implicit & k=8, D-Sim & 0.582 & 0.674 & 0.253 & 0.800 \\
+Qwen3.5 9B & Desc. & k=8, F-Sim & 0.580 & 0.692 & 0.246 & 0.692 \\
+Qwen3.5 9B & Title & k=8, D-Div & 0.578 & 0.689 & 0.245 & 0.692 \\
+Gemma-4 E4B & Title & k=8, D-MMR & 0.577 & 0.667 & 0.251 & 0.815 \\
+Qwen3.5 9B & Desc. & k=8, D-Sim & 0.576 & 0.683 & 0.244 & 0.711 \\
+Gemma-4 E4B & Desc. & k=8, S-Sim & 0.575 & 0.667 & 0.248 & 0.795 \\
+Gemma-4 E4B & Title & k=8, Rand & 0.574 & 0.680 & 0.242 & 0.711 \\
+Qwen3.5 9B & Desc. & k=8, D-MMR & 0.573 & 0.675 & 0.243 & 0.733 \\
+Gemma-4 E4B & Implicit & k=8, Rand & 0.572 & 0.663 & 0.245 & 0.793 \\
+Gemma-4 E4B & Implicit & k=8, D-Div & 0.572 & 0.663 & 0.245 & 0.793 \\
+Qwen3.5 9B & Explicit & k=8, Rand & 0.570 & 0.853 & 0.340 & 0.164 \\
+Qwen3.5 9B & Explicit & k=8, D-Div & 0.568 & 0.849 & 0.321 & 0.166 \\
+Gemma-4 E4B & Desc. & k=8, D-MMR & 0.567 & 0.646 & 0.245 & 0.860 \\
+Gemma-4 E4B & Implicit & k=8, S-Sim & 0.561 & 0.646 & 0.238 & 0.815 \\
+Qwen3.5 9B & Implicit & ZS & 0.558 & 0.873 & 0.500 & 0.113 \\
+Gemma-4 E4B & Implicit & k=8, F-Sim & 0.557 & 0.639 & 0.235 & 0.819 \\
+Qwen3.5 9B & Title & k=8, Rand & 0.553 & 0.668 & 0.220 & 0.634 \\
+Gemma-4 E4B & Implicit & k=8, D-MMR & 0.548 & 0.622 & 0.232 & 0.855 \\
+Qwen3.5 9B & Desc. & ZS & 0.541 & 0.660 & 0.207 & 0.593 \\
+Qwen3.5 9B & Title & k=8, S-Sim & 0.538 & 0.633 & 0.214 & 0.704 \\
+Gemma-4 E4B & Title & ZS & 0.525 & 0.606 & 0.210 & 0.759 \\
+Qwen3.5 9B & Title & k=8, F-Sim & 0.511 & 0.586 & 0.202 & 0.764 \\
+Qwen3.5 9B & Title & ZS & 0.509 & 0.614 & 0.184 & 0.595 \\
+Qwen3.5 9B & Title & k=8, D-Sim & 0.507 & 0.580 & 0.201 & 0.771 \\
+Qwen3.5 9B & Title & k=8, D-MMR & 0.507 & 0.576 & 0.202 & 0.790 \\
+EuroLLM 22B & Explicit & k=8, S-Sim & 0.474 & 0.539 & 0.180 & 0.740 \\
+EuroLLM 22B & Explicit & k=8, D-Sim & 0.473 & 0.523 & 0.190 & 0.843 \\
+EuroLLM 22B & Explicit & k=8, F-Sim & 0.464 & 0.517 & 0.182 & 0.798 \\
+EuroLLM 22B & Implicit & k=8, D-Sim & 0.447 & 0.485 & 0.182 & 0.872 \\
+EuroLLM 22B & Explicit & k=8, D-MMR & 0.438 & 0.476 & 0.176 & 0.851 \\
+EuroLLM 22B & Desc. & k=8, D-Sim & 0.436 & 0.474 & 0.175 & 0.843 \\
+EuroLLM 22B & Explicit & k=8, Rand & 0.434 & 0.479 & 0.166 & 0.769 \\
+EuroLLM 22B & Implicit & k=8, F-Sim & 0.433 & 0.467 & 0.177 & 0.875 \\
+EuroLLM 22B & Desc. & k=8, S-Sim & 0.428 & 0.465 & 0.170 & 0.829 \\
+EuroLLM 22B & Implicit & k=8, S-Sim & 0.427 & 0.459 & 0.174 & 0.870 \\
+EuroLLM 22B & Desc. & k=8, F-Sim & 0.425 & 0.459 & 0.172 & 0.848 \\
+Gemma-4 E4B & Implicit & ZS & 0.420 & 0.448 & 0.174 & 0.892 \\
+EuroLLM 22B & Explicit & k=8, D-Div & 0.417 & 0.453 & 0.164 & 0.805 \\
+EuroLLM 22B & Implicit & k=8, D-MMR & 0.416 & 0.443 & 0.173 & 0.896 \\
+EuroLLM 22B & Desc. & k=8, Rand & 0.404 & 0.431 & 0.166 & 0.863 \\
+EuroLLM 22B & Desc. & k=8, D-MMR & 0.399 & 0.422 & 0.166 & 0.884 \\
+EuroLLM 22B & Title & k=8, D-Sim & 0.395 & 0.418 & 0.165 & 0.879 \\
+EuroLLM 22B & Title & k=8, S-Sim & 0.392 & 0.413 & 0.165 & 0.889 \\
+EuroLLM 22B & Desc. & k=8, D-Div & 0.389 & 0.413 & 0.158 & 0.834 \\
+EuroLLM 22B & Title & k=8, F-Sim & 0.385 & 0.403 & 0.165 & 0.908 \\
+EuroLLM 22B & Implicit & k=8, D-Div & 0.367 & 0.382 & 0.159 & 0.899 \\
+EuroLLM 22B & Title & k=8, D-Div & 0.362 & 0.379 & 0.151 & 0.841 \\
+EuroLLM 22B & Title & k=8, Rand & 0.358 & 0.376 & 0.149 & 0.829 \\
+EuroLLM 22B & Explicit & ZS & 0.358 & 0.366 & 0.166 & 0.990 \\
+EuroLLM 22B & Implicit & k=8, Rand & 0.356 & 0.370 & 0.153 & 0.872 \\
+EuroLLM 22B & Title & k=8, D-MMR & 0.352 & 0.363 & 0.157 & 0.918 \\
+EuroLLM 22B & Desc. & ZS & 0.222 & 0.223 & 0.137 & 0.969 \\
+EuroLLM 22B & Implicit & ZS & 0.211 & 0.212 & 0.135 & 0.964 \\
+EuroLLM 22B & Title & ZS & 0.169 & 0.174 & 0.133 & 0.990 \\
+\end{longtable}

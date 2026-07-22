@@ -3,15 +3,17 @@
 Impact of demonstration ratio and ordering on F1 Macro.
 Data: 2x3 factorial design (ratio x order) from results/ablations/balance_X_order/.
 
-Four figures saved to results/ablations/balance_X_order/figures/:
-  ablation_tornado.pdf/.svg     — per model, horizontal bars = marginal F1 range per factor
-  ablation_heatmap.pdf/.svg     — model x factor heatmap, color = marginal F1 range
-  ablation_cellmeans.pdf/.svg   — per model, ratio x order grid of F1 values
-  ablation_interaction.pdf/.svg — per model, line plot: order on x-axis, ratio as two lines
+Five figures saved to results/ablations/balance_X_order/figures/:
+  ablation_tornado                — per model, horizontal bars = marginal F1 range per factor
+  ablation_heatmap                — model x factor heatmap, color = marginal F1 range
+  ablation_cellmeans              — per model, ratio x order grid of F1 values
+  ablation_interaction            — per model, line plot: order on x-axis, ratio as two lines
+  ablation_interaction_combined   — all models in one panel, color=model, style=ratio
 
 Marginal impact per factor:
   impact(ratio) = max(mean_over_order(F1)) - min(mean_over_order(F1))
   impact(order) = max(mean_over_ratio(F1)) - min(mean_over_ratio(F1))
+  impact(interaction) = range of the interaction residuals from the additive model
 """
 import os
 import sys
@@ -19,41 +21,30 @@ import sys
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+from matplotlib.lines import Line2D
 import numpy as np
 import pandas as pd
 import seaborn as sns
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from common import MEASURE, save_figure
-from model_colors import MODEL_LABELS, get_model_colors
+from common import (
+    ABLATION_FIGURES_DIR as FIGURES_DIR,
+    ABLATION_SCORE_TABLE as SCORE_TABLE,
+    MEASURE,
+    plot_impact_heatmap,
+    plot_impact_tornado,
+    save_figure,
+)
+from model_colors import MODEL_LABELS, get_model_colors, sort_models
 
-# ---------------------------------------------------------------------------
-# Paths
-# ---------------------------------------------------------------------------
-
-_HERE = os.path.dirname(os.path.abspath(__file__))
-_ABLATIONS_DIR = os.path.abspath(os.path.join(_HERE, "..", "..", "results", "ablations"))
-RESULTS_DIR = os.path.join(_ABLATIONS_DIR, "balance_X_order")
-FIGURES_DIR = os.path.join(RESULTS_DIR, "figures")
-SCORE_TABLE = os.path.join(RESULTS_DIR, "score_table_consolidated.csv")
-
-FACTORS = ["ratio", "order"]
-FACTOR_LABELS = {"ratio": "Balance", "order": "Order"}
+FACTORS = ["ratio", "order", "interaction"]
+FACTOR_LABELS = {"ratio": "Ratio", "order": "Order", "interaction": "Interaction"}
 
 RATIO_ORDER = ["balanced", "proportional"]
 ORDER_ORDER = ["random", "true-first", "true-last"]
 
 RATIO_LABELS = {"balanced": "Balanced", "proportional": "Proportional"}
 ORDER_LABELS  = {"random": "Random", "true-first": "True first", "true-last": "True last"}
-
-# Canonical model display order from MODEL_LABELS
-_MODEL_KEY_ORDER = list(MODEL_LABELS.keys())
-
-
-def _sort_models(models) -> list[str]:
-    keyed = [m for m in _MODEL_KEY_ORDER if m in models]
-    rest  = sorted(m for m in models if m not in _MODEL_KEY_ORDER)
-    return keyed + rest
 
 
 # ---------------------------------------------------------------------------
@@ -68,86 +59,27 @@ def load_df() -> pd.DataFrame:
 
 
 def compute_marginal_impact(df: pd.DataFrame) -> pd.DataFrame:
-    """Per (model, factor): max(marginal mean F1) - min(marginal mean F1)."""
+    """Per (model, factor): max(marginal mean F1) - min(marginal mean F1).
+    For 'interaction': range of interaction residuals from the additive model
+    (δ(r,o) = F1(r,o) − mean_ratio(r) − mean_order(o) + grand_mean).
+    Returns the [model, factor, impact] format the common plot helpers expect."""
     rows = []
     for model, grp in df.groupby("model"):
-        for factor in FACTORS:
+        for factor in ("ratio", "order"):
             marginal = grp.groupby(factor)[MEASURE].mean()
-            rows.append({"model": model, "ablation": factor,
-                          "impact": marginal.max() - marginal.min()})
+            rows.append({"model": model, "factor": factor,
+                         "impact": marginal.max() - marginal.min()})
+        cell = grp.groupby(["ratio", "order"])[MEASURE].mean()
+        grand = cell.mean()
+        ratio_means = grp.groupby("ratio")[MEASURE].mean()
+        order_means = grp.groupby("order")[MEASURE].mean()
+        residuals = [
+            f1 - ratio_means[r] - order_means[o] + grand
+            for (r, o), f1 in cell.items()
+        ]
+        rows.append({"model": model, "factor": "interaction",
+                     "impact": max(residuals) - min(residuals)})
     return pd.DataFrame(rows)
-
-
-# ---------------------------------------------------------------------------
-# Figure 1: Tornado (marginal impacts, one panel per model)
-# ---------------------------------------------------------------------------
-
-def plot_tornado(impact_df: pd.DataFrame, models: list[str], name: str) -> None:
-    ncols = 2
-    nrows = (len(models) + 1) // 2
-    fig, axes = plt.subplots(nrows, ncols, figsize=(10, nrows * 3.2))
-    axes_flat = np.array(axes).flatten()
-
-    palette = get_model_colors(models)
-    x_max = impact_df["impact"].max() * 1.1
-
-    for idx, model in enumerate(models):
-        ax = axes_flat[idx]
-        sub = (
-            impact_df[impact_df["model"] == model]
-            .set_index("ablation").reindex(FACTORS).reset_index()
-        )
-        ys = list(range(len(sub)))
-        bars = ax.barh(ys, sub["impact"].values, color=palette[model],
-                       edgecolor="white", height=0.55)
-        ax.set_yticks(ys)
-        if idx % ncols == 0:
-            ax.set_yticklabels([FACTOR_LABELS.get(a, a) for a in sub["ablation"]], fontsize=9)
-            ax.tick_params(axis="y", length=0)
-        else:
-            ax.set_yticklabels([])
-            ax.tick_params(axis="y", length=0)
-        ax.set_title(MODEL_LABELS.get(model, model), fontsize=9, fontweight="bold")
-        ax.set_xlim(0, x_max)
-        ax.spines[["top", "right"]].set_visible(False)
-        ax.tick_params(axis="x", labelsize=8)
-        for bar, val in zip(bars, sub["impact"].values):
-            ax.text(val + 0.003, bar.get_y() + bar.get_height() / 2,
-                    f"{val:.3f}", va="center", ha="left", fontsize=8)
-
-    for idx in range(len(models), len(axes_flat)):
-        axes_flat[idx].set_visible(False)
-
-    plt.tight_layout(rect=[0, 0, 1, 0.93])
-    save_figure(fig, FIGURES_DIR, name)
-    plt.close(fig)
-
-
-# ---------------------------------------------------------------------------
-# Figure 2: Heatmap (marginal impacts, model x factor)
-# ---------------------------------------------------------------------------
-
-def plot_heatmap(impact_df: pd.DataFrame, models: list[str], name: str) -> None:
-    pivot = (
-        impact_df
-        .pivot(index="model", columns="ablation", values="impact")
-        .reindex(index=models, columns=FACTORS)
-    )
-    pivot.columns = [FACTOR_LABELS[c] for c in pivot.columns]
-    pivot.index   = [MODEL_LABELS.get(m, m) for m in pivot.index]
-
-    fig, ax = plt.subplots(figsize=(len(FACTORS) * 1.9 + 1.2, len(models) * 1.1 + 1.2))
-    sns.heatmap(pivot, ax=ax, annot=True, fmt=".3f", cmap="YlOrRd",
-                linewidths=0.5, linecolor="white", cbar=False,
-                annot_kws={"fontsize": 18})
-    ax.set_xlabel("")
-    ax.set_ylabel("")
-    ax.tick_params(axis="x", labelsize=18)
-    ax.tick_params(axis="y", labelsize=18, rotation=0)
-
-    plt.tight_layout()
-    save_figure(fig, FIGURES_DIR, name)
-    plt.close(fig)
 
 
 # ---------------------------------------------------------------------------
@@ -157,6 +89,7 @@ def plot_heatmap(impact_df: pd.DataFrame, models: list[str], name: str) -> None:
 def plot_cellmeans(df: pd.DataFrame, models: list[str], name: str) -> None:
     ncols = 2
     nrows = (len(models) + 1) // 2
+    # One shared color scale so the panels are comparable across models
     vmin, vmax = df[MEASURE].min(), df[MEASURE].max()
 
     fig, axes = plt.subplots(nrows, ncols, figsize=(ncols * 4.5, nrows * 2.8))
@@ -207,7 +140,10 @@ def plot_interaction(df: pd.DataFrame, models: list[str], name: str) -> None:
     y_min    = df[MEASURE].min() - y_pad
     y_max    = df[MEASURE].max() + y_pad
 
-    fig, axes = plt.subplots(nrows, ncols, figsize=(ncols * 4.5, nrows * 3.0))
+    # The ratio legend is identical in every panel — show it only once
+    legend_model = "gemma-4-26B-A4B-it"
+
+    fig, axes = plt.subplots(nrows, ncols, figsize=(5.5, nrows * 2.1))
     axes_flat = np.array(axes).flatten()
 
     for idx, model in enumerate(models):
@@ -220,20 +156,78 @@ def plot_interaction(df: pd.DataFrame, models: list[str], name: str) -> None:
             ax.plot(x_pos, rsub[MEASURE].values,
                     linestyle=linestyles[ratio], marker=markers[ratio],
                     color=color, label=RATIO_LABELS[ratio],
-                    linewidth=1.5, markersize=5)
+                    linewidth=1.8, markersize=5)
+
+        is_bottom = idx >= (nrows - 1) * ncols
+        is_left   = idx % ncols == 0
 
         ax.set_xticks(x_pos)
-        ax.set_xticklabels(x_labels, fontsize=8)
+        ax.set_xticklabels(x_labels if is_bottom else [], fontsize=10)
         ax.set_ylim(y_min, y_max)
-        ax.set_title(MODEL_LABELS.get(model, model), fontsize=9, fontweight="bold")
+        ax.set_title(MODEL_LABELS.get(model, model), fontsize=11, fontweight="bold")
         ax.spines[["top", "right"]].set_visible(False)
-        ax.tick_params(axis="y", labelsize=8)
-        ax.legend(fontsize=7, loc="lower right")
+        ax.tick_params(axis="x", length=0)
+        ax.tick_params(axis="y", labelsize=10, labelleft=is_left, left=is_left)
+        if model == legend_model:
+            ax.legend(fontsize=9, loc="lower right")
 
     for idx in range(len(models), len(axes_flat)):
         axes_flat[idx].set_visible(False)
 
-    plt.tight_layout()
+    plt.tight_layout(pad=0.5, h_pad=0.8, w_pad=0.6)
+    save_figure(fig, FIGURES_DIR, name)
+    plt.close(fig)
+
+
+# ---------------------------------------------------------------------------
+# Figure 5: Interaction plot — all models collapsed into one panel
+# ---------------------------------------------------------------------------
+
+def plot_interaction_combined(df: pd.DataFrame, models: list[str], name: str) -> None:
+    palette    = get_model_colors(models)
+    linestyles = {"balanced": "--", "proportional": "-"}
+    markers    = {"balanced": "s",  "proportional": "o"}
+
+    x_pos    = list(range(len(ORDER_ORDER)))
+    x_labels = [ORDER_LABELS[o] for o in ORDER_ORDER]
+    y_pad    = 0.05
+    y_min    = df[MEASURE].min() - y_pad
+    y_max    = df[MEASURE].max() + y_pad
+
+    fig, ax = plt.subplots(figsize=(3.8, 3.5))
+
+    for model in models:
+        sub   = df[df["model"] == model]
+        color = palette[model]
+        for ratio in RATIO_ORDER:
+            rsub = sub[sub["ratio"] == ratio].set_index("order").reindex(ORDER_ORDER)
+            ax.plot(x_pos, rsub[MEASURE].values,
+                    linestyle=linestyles[ratio], marker=markers[ratio],
+                    color=color, linewidth=1.8, markersize=5)
+
+    ax.set_xticks(x_pos)
+    ax.set_xticklabels(x_labels, fontsize=10)
+    ax.set_ylim(y_min, y_max)
+    ax.spines[["top", "right"]].set_visible(False)
+    ax.tick_params(axis="x", length=0)
+    ax.tick_params(axis="y", labelsize=10)
+
+    # Two legend groups: model (color) and ratio (line style/marker)
+    model_handles = [
+        Line2D([0], [0], color=palette[m], linewidth=1.8,
+               label=MODEL_LABELS.get(m, m))
+        for m in models
+    ]
+    ratio_handles = [
+        Line2D([0], [0], color="#444444", linestyle=linestyles[r], marker=markers[r],
+               markersize=5, linewidth=1.8, label=RATIO_LABELS[r])
+        for r in RATIO_ORDER
+    ]
+    ax.legend(handles=model_handles + ratio_handles,
+              fontsize=8, loc="lower center", ncols=2,
+              framealpha=0.9)
+
+    plt.tight_layout(pad=0.5)
     save_figure(fig, FIGURES_DIR, name)
     plt.close(fig)
 
@@ -244,13 +238,14 @@ def plot_interaction(df: pd.DataFrame, models: list[str], name: str) -> None:
 
 def main() -> None:
     df = load_df()
-    models = _sort_models(df["model"].unique())
+    models = sort_models(df["model"].unique())
     impact_df = compute_marginal_impact(df)
 
-    plot_tornado(impact_df, models, "ablation_tornado")
-    plot_heatmap(impact_df, models, "ablation_heatmap")
+    plot_impact_tornado(impact_df, models, FACTORS, FACTOR_LABELS, FIGURES_DIR, "ablation_tornado")
+    plot_impact_heatmap(impact_df, models, FACTORS, FACTOR_LABELS, FIGURES_DIR, "ablation_heatmap")
     plot_cellmeans(df, models, "ablation_cellmeans")
     plot_interaction(df, models, "ablation_interaction")
+    plot_interaction_combined(df, models, "ablation_interaction_combined")
 
 
 if __name__ == "__main__":

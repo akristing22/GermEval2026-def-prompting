@@ -12,9 +12,7 @@ run_all.py instead.
 Requires the HF_TOKEN environment variable for HuggingFace Hub access.
 """
 
-import json
 import os
-from datetime import datetime
 
 import pandas as pd
 import yaml
@@ -26,26 +24,46 @@ import util
 
 N_SPLITS = 4
 
+# Static demonstration files per prompt_mode (same files KnowledgeBase.build()
+# loads); static mode is only implemented for these prompt modes.
+STATIC_DEMONSTRATION_FILES = {
+    "title": "static_title.yaml",
+    "implicit": "static_implicit.yaml",
+}
 
-def result_filename(cfg: dict, split: int) -> str:
-    """Build the result filename:
-    {model}_{prompt}_{demo_mode}_{demo_size}_{embedding}_{retrieval}_fold-N[_thinking].csv
 
-    None values appear literally as "None".
+def normalize_text(text: str) -> str:
+    """Reduce a post to its lowercase alphanumeric characters.
+
+    The static demonstration YAMLs differ from their def_train.csv source rows
+    in punctuation (dropped commas) and newline encoding (literal '\\r\\n'
+    instead of real newlines), so texts are compared in this normalized form.
     """
-    model_short = cfg["model_name"].split("/")[-1]
-    thinking_suffix = "_thinking" if cfg["thinking_mode"] else ""
+    text = text.replace("\\r\\n", " ")
+    return "".join(ch for ch in text.lower() if ch.isalnum())
 
-    return (
-        f"{model_short}_"
-        f"{cfg['prompt_mode']}_"
-        f"{cfg['demonstration_mode']}_"
-        f"{cfg['demonstration_size']}_"
-        f"{cfg['embedding_mode']}_"
-        f"{cfg['retrieval_mode']}_"
-        f"fold-{split}"
-        f"{thinking_suffix}.csv"
-    )
+
+def static_demonstration_ids(df: pd.DataFrame, config: dict) -> set:
+    """Ids of the def_train.csv rows used as static demonstrations.
+
+    Matches each demonstration text from the prompt_mode's static YAML back to
+    its dataset row via normalize_text(). Raises if a demonstration cannot be
+    matched, so a silent train/test leak is impossible.
+    """
+    filename = STATIC_DEMONSTRATION_FILES[config["prompt_mode"]]
+    with open(os.path.join(config["template_path"], filename)) as stream:
+        demonstrations = yaml.safe_load(stream)
+
+    normalized = df["description"].map(normalize_text)
+    ids = set()
+    for text in demonstrations:
+        matches = df.loc[normalized == normalize_text(text), "id"]
+        if matches.empty:
+            raise ValueError(
+                f"Static demonstration not found in def_train.csv: {text[:60]!r}"
+            )
+        ids.update(matches)
+    return ids
 
 
 def main():
@@ -66,14 +84,23 @@ def main():
         for i, (train_index, test_index) in enumerate(skf.split(df["description"], df["DEF"]))
     }
 
+    # Static demonstrations are fixed posts from def_train.csv shown in every
+    # prompt, so they must never be scored as test instances. Their rows are
+    # removed from both splits only after the folds were computed on the full
+    # dataset, keeping the fold assignment identical to all other runs.
+    if config["demonstration_mode"] == "static":
+        demonstration_ids = static_demonstration_ids(df, config)
+        print(f"Excluding {len(demonstration_ids)} static demonstration posts from the CV splits")
+    else:
+        demonstration_ids = set()
+
     print("Loading model...")
     lm = util.LM(config["model_name"])
 
     for split in tqdm(range(N_SPLITS), desc="Folds"):
         print(f"\nStarting fold {split}")
 
-        output_filename = result_filename(config, split)
-        output_path = os.path.join(config["results_path"], output_filename)
+        output_path = os.path.join(config["results_path"], util.result_filename(config, split))
         if os.path.exists(output_path):
             print(f"Results for fold {split} already exist, skipping...")
             continue
@@ -81,6 +108,10 @@ def main():
         train_idx, test_idx = folds[split]
         train = df.loc[train_idx]
         test = df.loc[test_idx]
+
+        if demonstration_ids:
+            train = train[~train["id"].isin(demonstration_ids)]
+            test = test[~test["id"].isin(demonstration_ids)]
 
         # Build the demonstration pool for few-shot prompting; zero-shot runs
         # (demonstration_size == 0) need no knowledge base.
@@ -99,43 +130,12 @@ def main():
 
         if config["prompt_mode"] == "explicit":
             # Multi-step pipeline: one inference call per legal decision step,
-            # with early stopping per explicit_decisions.yaml. Returns a finished
-            # results frame (id, text, labels, reply, ...).
-            all_replies = util.multi_step_generation(test, lm, pc, config)
-
-            # Serialize the chat-format prompts so the CSV stays one row per
-            # test instance.
-            all_replies["prompt"] = all_replies["prompt"].apply(
-                lambda x: json.dumps(x, ensure_ascii=False) if x is not None else None
-            )
-            all_replies.to_csv(output_path, index=False)
-
+            # with early stopping per explicit_decisions.yaml.
+            results = util.multi_step_generation(test, lm, pc, config)
         else:
-            # Single-step modes: build one prompt per test instance (includes
-            # demonstration retrieval if configured).
-            if config["embedding_mode"] is not None:
-                print(f"Retrieving demonstrations {datetime.now()}...")
-            prompts = [pc.construct(text) for text in tqdm(test["description"])]
+            results = util.single_step_generation(test, lm, pc, config)
 
-            print(f"Classifying {datetime.now()}...")
-            generated_answers = lm.generate(
-                prompts,
-                max_tokens=config["max_tokens"],
-                thinking_mode=config["thinking_mode"],
-            )
-            # Parse True/False from each reply; None marks an abstention
-            # (excluded later by evaluate.py).
-            y_pred = [util.read_labels_from_answer(a) for a in generated_answers]
-
-            pd.DataFrame({
-                "id": test["id"],
-                "description": test["description"],
-                "DEF": test["DEF"],
-                "predicted_label": y_pred,
-                "reply": generated_answers,
-                "prompt": [json.dumps(p, ensure_ascii=False) for p in prompts],
-            }).to_csv(output_path, index=False)
-
+        results.to_csv(output_path, index=False)
         print(f"Results saved to {output_path}")
 
 

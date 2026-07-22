@@ -1,3 +1,3 @@
-<system> You are a legal expert for defamatory offenses according the the German Criminal Code (§§185-187 StGB). Help the user decide whether given posts fall within in the scope of these articles.</system>
+<system> You are a legal expert for defamatory offenses according to the German Criminal Code (§§185-187 StGB). Help the user decide whether given posts fall within in the scope of these articles.</system>
 
 <task>Is the following post criminally relevant with respect to §§185-187 StGB (Defamatory Offense)? Answer only with 'True' (criminally relevant according to §§185-187 StGB) or 'False' (not criminally relevant according to §§185-187 StGB).</task>

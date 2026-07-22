@@ -1,26 +1,27 @@
-"""Ablation study: does the ordering of few-shot demonstrations affect classification?
+"""Ablation study: 2x3 factorial design over demonstration balance and order.
 
-Tests two orderings of the labelled demonstrations in the prompt:
-  - true_first : all True-labelled examples before all False-labelled ones
-  - true_last  : all False-labelled examples before all True-labelled ones
+Crosses two factors that are orthogonal to the main prompting-strategy grid:
+  - balance: class balance of the k demonstrations
+      balanced     — k/2 positive and k/2 negative examples
+      proportional — per-class counts mirror the train split's class distribution
+  - order: position of the demonstrations in the prompt
+      random / true_first / true_last
 
-Each ordering is written to its own subfolder under results/ablations/demo_order/
-so result filenames stay identical across conditions.
-
-Runs under stratified 4-fold CV (random_state=42).
+All six cells run under the same stratified 4-fold CV as run_all.py
+(random_state=42), with the remaining strategy parameters taken from
+config.yaml. Results are written to
+{results_path}/ablations/balance_X_order/{model}_{balance}_{order}_fold-N.csv.
 
 Requires the HF_TOKEN environment variable for HuggingFace Hub access.
 """
 
 import gc
-import json
 import os
 import time
-from datetime import datetime
 
 import pandas as pd
-import yaml
 import torch
+import yaml
 from huggingface_hub import login
 from sklearn.model_selection import StratifiedKFold
 from tqdm import tqdm
@@ -29,37 +30,24 @@ import util
 
 N_SPLITS = 4
 
+BALANCE_CONDITIONS = ["balanced", "proportional"]
+ORDER_CONDITIONS = ["random", "true_first", "true_last"]
+
+
 def result_filename(cfg: dict, split: int) -> str:
-    """Build the result filename:
-    {model}_{prompt}_{demo_mode}_{demo_size}_{embedding}_{retrieval}_fold-N[_thinking].csv
-
-    None values appear literally as "None".
-    """
+    """Ablation filename schema: {model}_{balance}_{order}_fold-N.csv
+    (the strategy axes are fixed in this ablation, so they are omitted)."""
     model_short = cfg["model_name"].split("/")[-1]
-
-    return (
-        f"{model_short}_"
-        f"{cfg["balance"]}_"
-        f"{cfg["order"]}_"
-        f"fold-{split}"
-        ".csv"
-    )
-
-
-def build_kb(cfg, train):
-    """Build the KnowledgeBase for the given config and train split.
-
-    Called once per (cfg, fold) and reused across both demo orders, since
-    ordering is applied at prompt-construction time, not retrieval time.
-    Returns None when demonstration_size is 0.
-    """
-    if cfg["demonstration_size"] == 0:
-        return None
-    return util.KnowledgeBase(train["description"], train["DEF"], cfg)
+    return f"{model_short}_{cfg['balance']}_{cfg['order']}_fold-{split}.csv"
 
 
 def run_config(cfg, test, lm, kb, split):
-    fname    = result_filename(cfg, split)
+    """Run one (balance, order) cell and save its result CSV.
+
+    Skips when the output already exists (resume support). Returns
+    (out_path, elapsed_seconds); elapsed is None for skipped runs.
+    """
+    fname = result_filename(cfg, split)
     out_path = os.path.join(cfg["results_path"], fname)
 
     if os.path.exists(out_path):
@@ -69,29 +57,13 @@ def run_config(cfg, test, lm, kb, split):
     print(f"  running: {fname}")
     t_start = time.time()
 
+    # The ordering is applied at prompt-construction time and the ratio at
+    # retrieval time, so the knowledge base can be shared across all cells.
     pc = util.PromptConstructor(kb, cfg)
-
-    if cfg["embedding_mode"] is not None:
-        print(f"Retrieving demonstrations {datetime.now()}...")
-    prompts = [pc.construct(text, ratio=cfg["ratio"],order=cfg["order"]) for text in tqdm(test["description"])]
-
-    print(f"Classifying {datetime.now()}...")
-    generated_answers = lm.generate(
-        prompts,
-        max_tokens=cfg["max_tokens"],
-        thinking_mode=cfg["thinking_mode"],
+    results = util.single_step_generation(
+        test, lm, pc, cfg, order=cfg["order"], ratio=cfg["ratio"]
     )
-
-    y_pred = [util.read_labels_from_answer(a) for a in generated_answers]
-
-    pd.DataFrame({
-        "id":              test["id"],
-        "description":     test["description"],
-        "DEF":             test["DEF"],
-        "predicted_label": y_pred,
-        "reply":           generated_answers,
-        "prompt":          [json.dumps(p, ensure_ascii=False) for p in prompts],
-    }).to_csv(out_path, index=False)
+    results.to_csv(out_path, index=False)
 
     elapsed = round(time.time() - t_start, 1)
     print(f"  done in {elapsed}s: {fname}")
@@ -101,22 +73,13 @@ def run_config(cfg, test, lm, kb, split):
 def main():
     with open("config.yaml") as stream:
         cfg = yaml.safe_load(stream)
-    base_results_path = cfg["results_path"] + "/ablations/balance_X_order"
-    paths = {
-        "data_path":     cfg["data_path"],
-        "results_path":  base_results_path,
-        "template_path": cfg["template_path"],
-    }
-
-    os.makedirs(base_results_path, exist_ok=True)
+    cfg["results_path"] = cfg["results_path"] + "/ablations/balance_X_order"
+    os.makedirs(cfg["results_path"], exist_ok=True)
 
     login(token=os.environ["HF_TOKEN"])
-    cfg["results_path"] = base_results_path
-
-
 
     print("Loading data...")
-    df          = pd.read_csv(paths["data_path"] + "/def_train.csv", sep=";")
+    df = pd.read_csv(cfg["data_path"] + "/def_train.csv", sep=";")
 
     skf = StratifiedKFold(n_splits=N_SPLITS, shuffle=True, random_state=42)
     folds = {
@@ -124,64 +87,46 @@ def main():
         for i, (train_index, test_index) in enumerate(skf.split(df["description"], df["DEF"]))
     }
 
-    timings = {}
-
+    model_name = cfg["model_name"]
+    # The largest model only fits alongside the embedding model when quantised
+    quantisation = model_name == "google/gemma-4-26B-A4B-it"
 
     for split in tqdm(range(N_SPLITS), desc="Folds"):
         print(f"\nStarting fold {split}")
 
         train_idx, test_idx = folds[split]
         train = df.loc[train_idx]
-        test  = df.loc[test_idx]
+        test = df.loc[test_idx]
 
-        num_neg = int(max(1,round(cfg["demonstration_size"]*len(train[train["DEF"]==False])/len(train),0)))
-        num_pos = int(max(1,round(cfg["demonstration_size"]*len(train[train["DEF"]==True])/len(train),0)))
-
-        diff = cfg["demonstration_size"] - (num_neg+num_pos)
-        if diff == 1:
-            num_pos += 1 if min(num_pos,num_neg) == num_pos else 0
-            num_neg += 1 if min(num_pos,num_neg) == num_neg else 0
-        if diff == -1:
-            num_pos -=1 if max(num_pos,num_neg) == num_pos else 0
-            num_neg -=1 if max(num_neg,num_pos) == num_neg else 0
-
-        demo_ratio_train = {"neg":num_neg,"pos":num_pos}
-
-        assert demo_ratio_train["neg"] + demo_ratio_train["pos"] == cfg["demonstration_size"], "Demo ratio does not add up to set demonstration size"
-
-        model_name = cfg["model_name"]
+        # Proportional per-class counts are derived from this fold's train split
+        demo_ratio_train = util.proportional_demo_ratio(train["DEF"], cfg["demonstration_size"])
 
         torch.cuda.empty_cache()
         gc.collect()
-        quantisation = True if model_name == "google/gemma-4-26B-A4B-it" else False
 
-
+        # One knowledge base per fold, shared by all six (balance, order) cells
         print("Building Knowledge Base...")
-        kb = build_kb(cfg, train)
+        kb = (
+            util.KnowledgeBase(train["description"], train["DEF"], cfg)
+            if cfg["demonstration_size"] > 0
+            else None
+        )
 
         print("Loading model...")
-        lm = util.LM(model_name,quantisation)
+        lm = util.LM(model_name, quantisation)
 
-        for demo_order in ["random","true_first","true_last"]:
+        for demo_order in ORDER_CONDITIONS:
             cfg["order"] = demo_order
-            #for demo_ratio, balance_label in [(None, "balanced"), (demo_ratio_train, "proportional")]:
-            for demo_ratio, balance_label in [(demo_ratio_train, "proportional")]:
+            for balance_label in BALANCE_CONDITIONS:
                 cfg["balance"] = balance_label
-                cfg["ratio"] = demo_ratio
-        
-        
-                filename = result_filename(cfg,split)
-
-                if filename in os.listdir(cfg["results_path"]):
-                    print(f"{filename} already exists, skipping config")
-                    continue
+                cfg["ratio"] = demo_ratio_train if balance_label == "proportional" else None
 
                 try:
-                    _, elapsed = run_config(cfg, test, lm, kb, split)
-                    timings[filename] = elapsed
+                    run_config(cfg, test, lm, kb, split)
                 except Exception as e:
-                    print(f"  ERROR in {filename}: {e}")
+                    print(f"  ERROR in {result_filename(cfg, split)}: {e}")
 
+        # Free the model before the next fold's knowledge base is embedded
         del lm
         torch.cuda.empty_cache()
         gc.collect()

@@ -1,0 +1,19 @@
+\begin{table*}[t]
+\centering
+\caption{$F1_{macro}$ by demonstration class ratio and ordering (balance $\times$ order ablation). \textbf{Bold}: best combination per model; \textit{italic}: worst.}
+\label{tab:ablation-balance-order}
+\small
+\setlength{\tabcolsep}{4pt}
+\begin{tabular}{lrrrrrr}
+\toprule
+Model & \multicolumn{3}{c}{Balanced} & \multicolumn{3}{c}{Proportional} \\
+\cmidrule(lr){2-4} \cmidrule(lr){5-7}
+ & Random & True first & True last & Random & True first & True last \\
+\midrule
+Gemma-4 26B & 0.723 & 0.740 & \textit{0.706} & 0.727 & \textbf{0.741} & 0.728 \\
+Gemma-4 E4B & 0.579 & 0.592 & \textit{0.540} & 0.677 & \textbf{0.690} & 0.665 \\
+Qwen3.5 9B & 0.604 & \textbf{0.704} & \textit{0.581} & 0.663 & 0.608 & 0.653 \\
+EuroLLM 22B & 0.445 & 0.546 & \textit{0.361} & \textbf{0.663} & 0.656 & 0.653 \\
+\bottomrule
+\end{tabular}
+\end{table*}

@@ -1,0 +1,17 @@
+\begin{table*}[t]
+\centering
+\caption{Best configuration per model (highest $F1_{macro}$ over all prompt modes and retrieval settings). P$_\mathsf{T}$/R$_\mathsf{T}$: precision/recall for the prosecutable class (\emph{True}).}
+\label{tab:e-best-per-model}
+\small
+\setlength{\tabcolsep}{4pt}
+\begin{tabular}{llrrrr}
+\toprule
+Model & Config & F1 & Acc. & P$_\mathsf{T}$ & R$_\mathsf{T}$ \\
+\midrule
+Gemma-4 26B & Implicit, D-Sim & \textbf{0.733} & \textbf{0.850} & \textbf{0.445} & \textbf{0.740} \\
+Gemma-4 E4B & Explicit, S-Sim & 0.659 & 0.799 & 0.341 & 0.622 \\
+Qwen3.5 9B & Explicit, D-Sim & 0.636 & 0.821 & 0.338 & 0.426 \\
+EuroLLM 22B & Explicit, S-Sim & 0.474 & 0.539 & 0.180 & \textbf{0.740} \\
+\bottomrule
+\end{tabular}
+\end{table*}

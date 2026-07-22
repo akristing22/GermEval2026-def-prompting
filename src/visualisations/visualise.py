@@ -1,38 +1,39 @@
 #!/usr/bin/env python3
 """
-Visualisations for prompting strategy comparison.
+Main visualisations for the prompting-strategy comparison.
 
 Reads results/final_run/score_table_consolidated.csv and generates three
 figures (each as .pdf and .svg) into results/final_run/figures/:
-  1. specification_curve  — sorted F1 Macro + spec-choice grid
-  2. heatmap_model_prompt — mean F1 Macro per model × prompt_mode
-  3. violin_retrieval     — F1 Macro distribution by retrieval_mode
+  1. heatmap_model_prompt — mean F1 Macro per model × prompt_mode
+  2. violin_retrieval     — F1 Macro distribution by retrieval configuration
+  3. violin_prompt        — F1 Macro distribution by prompt_mode
 
-Note: specification_curve v0.3.9 runs OLS regressions and does not accept
-pre-computed metrics; the curve below follows the same Simonsohn et al. (2020)
-visual convention, implemented directly with matplotlib.
+The specification curve lives in spec_graph_f1.py, the impact figures in
+impact_graph_f1.py.
 """
 import os
 import sys
 
 import matplotlib
 matplotlib.use("Agg")
-import matplotlib.gridspec as gridspec
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import seaborn as sns
 
-_RETRIEVAL_CONFIG_MAP = {
-    ("None",   "None"):       "Zero-Shot",
-    ("None",   "random"):     "Random",
-    ("dense",  "similarity"): "Similarity (Dense)",
-    ("sparse", "similarity"): "Similarity (Sparse)",
-    ("fusion", "similarity"): "Similarity (Fusion)",
-    ("dense",  "diversity"):  "Diversity (Dense)",
-    ("dense",  "mmr"):        "MMR (Dense)",
-}
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from model_colors import get_model_colors, MODEL_LABELS, sort_models, MODEL_ORDER
+from common import (
+    FINAL_RUN_FIGURES_DIR as FIGURES_DIR,
+    KNN_BASELINE_F1,
+    SCORE_TABLE_CONSOLIDATED as SCORE_TABLE,
+    add_retrieval_config_column,
+    load_consolidated_scores,
+    save_figure,
+)
 
+# Marker shape per prompt mode (capitalised display form), used to distinguish
+# prompt modes within the retrieval violin plot
 PROMPT_MARKERS = {
     "Title":       "o",
     "Description": "s",
@@ -40,31 +41,14 @@ PROMPT_MARKERS = {
     "Explicit":    "D",
 }
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from model_colors import get_model_colors, MODEL_LABELS
-from common import (
-    FINAL_RUN_FIGURES_DIR as FIGURES_DIR,
-    SCORE_TABLE_CONSOLIDATED as SCORE_TABLE,
-    load_consolidated_scores,
-    save_figure,
-)
-
-# ---------------------------------------------------------------------------
-# Spec dimensions (order matches the filename format in CLAUDE.md)
-# ---------------------------------------------------------------------------
+# Configuration axes shown in the console overview (order matches the
+# result filename format in CLAUDE.md)
 SPEC_DIMS = [
     "model", "prompt_mode", "demo_size",
     "emb_mode", "retrieval_mode"
 ]
-DIM_LABELS = [
-    "Model", "Conditioning", "Demo. size",
-    "Embed. mode", "Retrieval"
-]
 
-MODELS = MODEL_LABELS
-
-ACCENT = "#2979a0"
-GREY   = "#bbbbbb"
+ACCENT = "#2979a0"  # fill/edge color of the violin bodies
 
 
 # ---------------------------------------------------------------------------
@@ -77,9 +61,8 @@ def load_scores(score_table_path: str = SCORE_TABLE) -> pd.DataFrame:
     return scores[SPEC_DIMS + ["f1_macro"]]
 
 
-
 # ---------------------------------------------------------------------------
-# 2. Heatmap — model × prompt_mode
+# 1. Heatmap — model × prompt_mode
 # ---------------------------------------------------------------------------
 
 def plot_heatmap(scores: pd.DataFrame) -> None:
@@ -87,6 +70,7 @@ def plot_heatmap(scores: pd.DataFrame) -> None:
     pivot = scores.pivot_table(
         values="f1_macro", index="model", columns="prompt_mode", aggfunc="mean"
     )
+    pivot = pivot.reindex([m for m in MODEL_ORDER if m in pivot.index])
 
     fig, ax = plt.subplots(figsize=(max(6, len(pivot.columns) * 1.8), max(4, len(pivot) * 1.2)))
     sns.heatmap(
@@ -107,7 +91,7 @@ def plot_heatmap(scores: pd.DataFrame) -> None:
 
 
 # ---------------------------------------------------------------------------
-# 3. Violin — F1 Macro by retrieval_mode
+# 2. Violin — F1 Macro by retrieval configuration
 # ---------------------------------------------------------------------------
 
 def plot_violin_by_retrieval(scores: pd.DataFrame) -> None:
@@ -116,14 +100,7 @@ def plot_violin_by_retrieval(scores: pd.DataFrame) -> None:
     combined), sorted by group mean. Points are coloured by model and shaped by
     prompt_mode. Falls back to a box plot when any group has fewer than 3 observations.
     """
-    df = scores.copy()
-    df["retrieval_config"] = df.apply(
-        lambda r: _RETRIEVAL_CONFIG_MAP.get(
-            (r["emb_mode"], r["retrieval_mode"]),
-            f"{r['retrieval_mode']} ({r['emb_mode']})",
-        ),
-        axis=1,
-    )
+    df = add_retrieval_config_column(scores)
     df["prompt_mode"] = df["prompt_mode"].str.capitalize()
 
     means = df.groupby("retrieval_config")["f1_macro"].mean().sort_values()
@@ -151,7 +128,8 @@ def plot_violin_by_retrieval(scores: pd.DataFrame) -> None:
             palette="Blues", linewidth=1.2,
         )
 
-    models = sorted(df["model"].unique())
+    # Overlay the individual configs: color = model, marker shape = prompt mode
+    models = sort_models(df["model"].unique())
     model_palette = get_model_colors(models)
     prompt_modes_present = [p for p in PROMPT_MARKERS if p in df["prompt_mode"].unique()]
 
@@ -162,7 +140,7 @@ def plot_violin_by_retrieval(scores: pd.DataFrame) -> None:
             if sub.empty:
                 continue
             xs = sub["retrieval_config"].map(x_idx).values.astype(float)
-            xs += rng.uniform(-0.15, 0.15, size=len(sub))
+            xs += rng.uniform(-0.15, 0.15, size=len(sub))  # jitter against overlap
             ax.scatter(
                 xs, sub["f1_macro"].values,
                 color=model_palette[model],
@@ -170,12 +148,12 @@ def plot_violin_by_retrieval(scores: pd.DataFrame) -> None:
                 s=25, alpha=0.85, zorder=3,
             )
 
-    chance_line = ax.axhline(0.64, color="grey", ls="--", lw=0.8, alpha=0.7)
+    ax.axhline(KNN_BASELINE_F1, color="grey", ls="--", lw=0.8, alpha=0.7)
 
     model_handles = [
         plt.Line2D([0], [0], marker="o", color="w",
                    markerfacecolor=model_palette[m], markersize=7,
-                   label=MODELS.get(m, m))
+                   label=MODEL_LABELS.get(m, m))
         for m in models
     ]
     shape_handles = [
@@ -185,7 +163,7 @@ def plot_violin_by_retrieval(scores: pd.DataFrame) -> None:
         for p in prompt_modes_present
     ]
     chance_handle = plt.Line2D([0], [0], color="grey", ls="--", lw=0.8,
-                               label="KNN baseline (0.64)")
+                               label=f"KNN baseline ({KNN_BASELINE_F1:.2f})")
     ax.legend(
         handles=model_handles + shape_handles + [chance_handle],
         fontsize=8, loc="lower right", frameon=False,
@@ -204,13 +182,13 @@ def plot_violin_by_retrieval(scores: pd.DataFrame) -> None:
 
 
 # ---------------------------------------------------------------------------
-# 4. Violin — F1 Macro by prompt_mode
+# 3. Violin — F1 Macro by prompt_mode
 # ---------------------------------------------------------------------------
 
 def plot_violin_by_prompt(scores: pd.DataFrame) -> None:
     """
     F1 Macro distribution per prompt_mode, sorted by group mean.
-    Falls back to a strip plot when any group has fewer than 3 observations
+    Falls back to a box plot when any group has fewer than 3 observations
     (too few points for a meaningful violin shape).
     Points are coloured by model.
     """
@@ -242,7 +220,7 @@ def plot_violin_by_prompt(scores: pd.DataFrame) -> None:
             palette="Blues", linewidth=1.2,
         )
 
-    models = sorted(df["model"].unique())
+    models = sort_models(df["model"].unique())
     model_palette = get_model_colors(models)
 
     sns.stripplot(
@@ -251,16 +229,16 @@ def plot_violin_by_prompt(scores: pd.DataFrame) -> None:
         palette=model_palette, size=5, alpha=0.85, jitter=True, dodge=False,
     )
 
-    chance_line = ax.axhline(0.64, color="grey", ls="--", lw=0.8, alpha=0.7)
+    chance_line = ax.axhline(KNN_BASELINE_F1, color="grey", ls="--", lw=0.8, alpha=0.7)
 
-    # legend: model colours + chance line
+    # legend: model colours + baseline line
     handles, labels = ax.get_legend_handles_labels()
-    labels = [MODELS[label] for label in labels]
+    labels = [MODEL_LABELS.get(label, label) for label in labels]
     handles.append(chance_line)
-    labels.append("KNN baseline (0.64)")
+    labels.append(f"KNN baseline ({KNN_BASELINE_F1:.2f})")
     ax.legend(handles, labels, fontsize=8, loc="lower right", frameon=False,
               title="Model", title_fontsize=8)
-    
+
     ax.set_xticklabels(["zero-shot" if lbl.get_text() == "None" else lbl.get_text()
                         for lbl in ax.get_xticklabels()])
     ax.set_title("F1 Macro by Conditioning", fontsize=12, pad=8)

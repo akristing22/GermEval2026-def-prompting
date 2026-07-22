@@ -2,13 +2,15 @@
 """
 Specification curve — F1 Macro across prompting strategy configurations.
 
-Uses consolidated per-config mean F1 (read from results/final_run/score_table_consolidated.csv).
-Adapted from specification_graph.py (another project) for this research project.
+Uses consolidated per-config mean F1 (read from
+results/final_run/score_table_consolidated.csv) and follows the visual
+convention of Simonsohn et al. (2020): a top panel with the sorted
+specification curve and a bottom panel marking each specification's choices.
 
-Dimensions shown in spec grid: model, prompt_mode, demo_size, embedding_mode, retrieval_mode.
-Color-coded by model.
-
-Output: results/final_run/figures/spec_curve_f1.{pdf,svg} (+ variants)
+Figures written to results/final_run/figures/:
+  - spec_curve_f1            all configs, model as a spec dimension
+  - spec_curve_f1_nomodel    model pooled (one dot per model and spec)
+  - spec_curve_f1_{model}    one curve per model
 """
 import os
 import sys
@@ -21,16 +23,16 @@ import pandas as pd
 from mpl_toolkits.axisartist import axislines
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from model_colors import get_label_colors, MODEL_LABELS
+from model_colors import get_label_colors, MODEL_LABELS, sort_model_labels
 from common import (
     FINAL_RUN_FIGURES_DIR as FIGURES_DIR,
+    KNN_BASELINE_F1,
     MEASURE,
     SCORE_TABLE_CONSOLIDATED,
+    add_retrieval_config_column,
+    load_consolidated_scores,
     save_figure,
 )
-import common
-
-ACCENT = "#2979a0"
 
 # ---------------------------------------------------------------------------
 # Config
@@ -38,26 +40,15 @@ ACCENT = "#2979a0"
 GROUP_COLS = ["model", "prompt_mode", "retrieval_config"]
 COLOR_COL  = "model"
 
+# Display order of the categories within each spec-grid row
 SPEC_ORDER = {
-    #"model":         ["gemma-4-E4B-it", "Qwen3.5-9B", "gemma-4-26B-A4B-it", "EuroLLM-22B-Instruct-2512"],
     "prompt_mode":      ["Title", "Description", "Implicit", "Explicit"],
     "retrieval_config": ["Zero-Shot", "Random", "Similarity (Dense)", "Similarity (Sparse)",
                          "Similarity (Fusion)", "Diversity (Dense)", "MMR (Dense)"],
 }
 COL_LABEL = {
-    #"model":         "Model",
     "prompt_mode":      "Conditioning",
     "retrieval_config": "Retrieval",
-}
-
-_RETRIEVAL_CONFIG_MAP = {
-    ("None",    "None"):       "Zero-Shot",
-    ("None",    "random"):     "Random",
-    ("dense",   "similarity"): "Similarity (Dense)",
-    ("sparse",  "similarity"): "Similarity (Sparse)",
-    ("fusion",  "similarity"): "Similarity (Fusion)",
-    ("dense",   "diversity"):  "Diversity (Dense)",
-    ("dense",   "mmr"):        "MMR (Dense)",
 }
 
 FIGURE_HEIGHT = 4.4
@@ -73,20 +64,17 @@ AXIS_LABEL_FS  = 9
 # Data loading — one row per config (consolidated across folds)
 # ---------------------------------------------------------------------------
 
-def load_consolidated_scores(score_table_path: str = SCORE_TABLE_CONSOLIDATED) -> pd.DataFrame:
-    """Load consolidated scores from score_table_consolidated.csv."""
-    df = common.load_consolidated_scores(score_table_path)
-    df["retrieval_config"] = (
-        df[["emb_mode", "retrieval_mode"]]
-        .apply(lambda r: _RETRIEVAL_CONFIG_MAP.get((r["emb_mode"], r["retrieval_mode"])), axis=1)
-    )
+def load_scores(score_table_path: str = SCORE_TABLE_CONSOLIDATED) -> pd.DataFrame:
+    """Load consolidated scores and map them to display values."""
+    df = load_consolidated_scores(score_table_path)
+    df = add_retrieval_config_column(df)
     df["prompt_mode"] = df["prompt_mode"].str.capitalize()
     df["model"] = df["model"].map(lambda m: MODEL_LABELS.get(m, m))
     return df[GROUP_COLS + [MEASURE]]
 
 
 # ---------------------------------------------------------------------------
-# Plotting helpers (adapted from specification_graph.py)
+# Plotting helpers
 # ---------------------------------------------------------------------------
 
 def _format_axes(ax_curve, ax_specs):
@@ -107,14 +95,15 @@ def _plot_column(ax_curve, ax_specs, agg, plot_df, method_colors, model_colors,
     """Render one specification curve column: points + spec indicator grid."""
 
     # ── top panel ────────────────────────────────────────────────────────────
-    best_idx = plot_df[MEASURE].idxmax()
+    # Each model's best specification is highlighted with a star marker
+    best_idxs = set(plot_df.groupby("model")[MEASURE].idxmax().values)
     rng = np.random.default_rng(42)
     for j in range(len(agg)):
         mask = np.logical_and.reduce([plot_df[c] == agg.loc[j, c] for c in group_cols])
         sub = plot_df.loc[mask]
-        xs = j + rng.uniform(-0.12, 0.12, size=len(sub))
+        xs = j + rng.uniform(-0.12, 0.12, size=len(sub))  # jitter against overlap
         for k, (idx, row) in enumerate(sub.iterrows()):
-            is_best = (idx == best_idx)
+            is_best = (idx in best_idxs)
             ax_curve.scatter(xs[k], row[MEASURE],
                              color=model_colors[row["model"]],
                              s=60 if is_best else 18,
@@ -123,6 +112,7 @@ def _plot_column(ax_curve, ax_specs, agg, plot_df, method_colors, model_colors,
                              zorder=4 if is_best else 3)
 
     if model_lines:
+        # Connect each model's mean F1 across the sorted specifications
         for model in sorted(plot_df["model"].unique()):
             xs_line, ys_line = [], []
             for j in range(len(agg)):
@@ -193,7 +183,7 @@ def _plot_column(ax_curve, ax_specs, agg, plot_df, method_colors, model_colors,
 # Main
 # ---------------------------------------------------------------------------
 
-def _build_figure(plot_df, group_cols, color_col, title, name, model_lines=True):
+def _build_figure(plot_df, group_cols, color_col, name, model_lines=True):
     """Build and save one specification curve figure."""
     agg = (
         plot_df
@@ -205,7 +195,7 @@ def _build_figure(plot_df, group_cols, color_col, title, name, model_lines=True)
     )
 
     # scatter dot colors — always by model (fixed scheme from CLAUDE.md)
-    models_sorted = sorted(plot_df["model"].unique())
+    models_sorted = sort_model_labels(plot_df["model"].unique())
     model_colors = get_label_colors(models_sorted)
 
     # spec-grid tick colors (for color_col row; gray if color_col not a spec dimension)
@@ -228,7 +218,8 @@ def _build_figure(plot_df, group_cols, color_col, title, name, model_lines=True)
     ax_curve.set_ylabel("F1 Macro", fontsize=AXIS_LABEL_FS)
     ax_curve.tick_params(axis="y", labelsize=CURVE_TICK_FS)
     ax_curve.set_ylim(0, 0.8)
-    baseline = ax_curve.axhline(0.64, color="grey", ls="--", lw=0.8, alpha=0.7, zorder=0)
+    baseline = ax_curve.axhline(KNN_BASELINE_F1, color="grey", ls="--", lw=0.8,
+                                alpha=0.7, zorder=0)
 
     handles = [
         plt.Line2D([0], [0], marker="o", color="w",
@@ -236,15 +227,13 @@ def _build_figure(plot_df, group_cols, color_col, title, name, model_lines=True)
         for m in models_sorted
     ]
     handles.append(baseline)
-    handles[-1].set_label("KNN baseline (0.64)")
+    handles[-1].set_label(f"KNN baseline ({KNN_BASELINE_F1:.2f})")
     ax_curve.legend(handles=handles,
-                    #title="Model",
                     loc="lower right",
                     ncol=2,
                     fontsize=7, title_fontsize=7, framealpha=0.8,
                     columnspacing=1.0, handletextpad=0.5)
 
-    #fig.suptitle(title, fontsize=10, fontweight="bold", y=0.99)
     plt.subplots_adjust(top=0.93, bottom=0.04)
     save_figure(fig, FIGURES_DIR, name)
     plt.close(fig)
@@ -252,7 +241,7 @@ def _build_figure(plot_df, group_cols, color_col, title, name, model_lines=True)
 
 def main():
     print(f"Loading scores from: {SCORE_TABLE_CONSOLIDATED}")
-    plot_df = load_consolidated_scores()
+    plot_df = load_scores()
     print(f"  {len(plot_df)} configs")
 
     # Figure 1: model included as a spec dimension, colored by model
@@ -262,7 +251,6 @@ def main():
         plot_df,
         group_cols=group_cols_full,
         color_col="model",
-        title="Specification Curve — F1 Macro (mean across folds)",
         name="spec_curve_f1",
     )
 
@@ -273,13 +261,12 @@ def main():
         plot_df,
         group_cols=group_cols_no_model,
         color_col="model",
-        title="Specification Curve — F1 Macro (all models, mean across folds)",
         name="spec_curve_f1_nomodel",
         model_lines=False,
     )
 
-    # Figures 3–6: one per model, no model dimension
-    for model_name in sorted(plot_df["model"].unique()):
+    # Figures 3-6: one per model, no model dimension
+    for model_name in sort_model_labels(plot_df["model"].unique()):
         model_df = plot_df[plot_df["model"] == model_name].copy()
         n_specs = model_df.groupby(group_cols_no_model).ngroups
         safe_name = model_name.replace("/", "-")
@@ -288,7 +275,6 @@ def main():
             model_df,
             group_cols=group_cols_no_model,
             color_col="model",
-            title=f"Specification Curve — {model_name} — F1 Macro (mean across folds)",
             name=f"spec_curve_f1_{safe_name}",
         )
 
