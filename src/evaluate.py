@@ -14,6 +14,8 @@ The positional argument selects the filename schema:
   - balance_X_order ablation filenames ({model}_{ratio}_{order}[_fold-N].csv)
   - static          static demonstration ablation (standard filenames,
                     results in results/ablations/static/)
+  - exploration     exploration results
+  - knn_baseline    baseline results
 
 One score table is written into the results directory:
   - score_table_consolidated.csv  one row per config, scored on the merged
@@ -47,12 +49,15 @@ DEFAULT_RESULTS_DIRS = {
     "final_run": "../results/final_run",
     "balance_X_order": "../results/ablations/balance_X_order",
     "static": "../results/ablations/static",
+    "exploration":"../results/exploration",
+    "knn_baseline":"../results/final_run/knn_baseline"
 }
 
 CONFIG_COLUMNS = {
     "final_run": ["model", "prompt_mode", "demo_mode", "demo_size",
                   "embedding_mode", "retrieval_mode", "thinking_mode"],
     "balance_X_order": ["model", "ratio", "order"],
+    "knn_baseline":["model"]
 }
 # The static demonstration ablation uses the standard result filename format,
 # so it shares the final_run config columns and parser
@@ -129,11 +134,19 @@ def parse_filename_balance_x_order(filename: str) -> dict | None:
         "fold": fold,
     }
 
+def parse_baseline(filename:str) -> dict | None:
+
+    return {
+        "model":filename.removesuffix(".csv"),
+        "fold":None
+    }
 
 PARSERS = {
     "final_run": parse_filename_final_run,
     "balance_X_order": parse_filename_balance_x_order,
     "static": parse_filename_final_run,
+    "exploration":parse_filename_final_run,
+    "knn_baseline":parse_baseline
 }
 
 
