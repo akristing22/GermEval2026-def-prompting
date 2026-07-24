@@ -55,17 +55,10 @@ The annotation schema follows Zufall et al. (2019), [*From legal to technical co
     └── exploration/               # Hyperparameter exploration (demonstration size 4/8/16/32)
 ```
 
-## Dataset
 
-- `data/def_train.csv` — semicolon-delimited; key columns are `description` (post text) and `DEF` (`True`/`False` label).
-- `data/single_step_annotation.csv` — a comma-delimited subset of `def_train.csv` with one extra column per step of the 6-step schema. It is used to evaluate the intermediate steps of the `explicit` pipeline and as the demonstration pool for few-shot retrieval in `explicit` mode.
-- **Do not modify the dataset files.** All preprocessing happens in code at load time.
+## Prompting/RetICL Strategies
 
-Splits: `single_run.py` uses a 70/30 train-test split; `run_all.py` and `knn_baseline.py` use stratified 4-fold cross-validation. All splits use `random_state=42`, so folds are identical across experiments.
-
-## Prompting Strategies
-
-All behavior is controlled via config parameters along five independent axes:
+All behaviour is controlled via config parameters along five independent axes:
 
 ### `prompt_mode` — how the task is described to the model
 
@@ -78,20 +71,20 @@ All behavior is controlled via config parameters along five independent axes:
 
 Templates live in `templates/` and use XML-like tags: `<system>` for the system prompt, `<task>` for single-step modes, `<step1>`–`<step6>` for `explicit` mode.
 
-In `explicit` mode, each step gets its own retrieval store built from the per-step labels in `single_step_annotation.csv` (restricted to the current train split), and each step runs as an independent conversation — previous steps' prompts and replies are not included. Per-step demonstrations stay class-balanced; a step where one class has no annotated examples runs zero-shot.
+In `explicit` mode, each step gets its own retrieval store built from the per-step labels in `single_step_annotation.csv` (restricted to the current train split), and each step runs as an independent conversation — previous steps' prompts and replies are not included.
 
 ### `demonstration_mode` — whether examples are included
 
 | Value | Description |
 |---|---|
 | `dynamic` | Examples retrieved per test instance via the retrieval pipeline |
-| `static` | A fixed example set reused for all test instances (**not yet implemented**) |
+| `static` | A fixed example set reused for all test instances (only for *title* and *implicit* modes)|
 
 Zero-shot is expressed as `demonstration_size: 0` (all demonstration/retrieval settings are then ignored).
 
 ### `demonstration_size` — number of few-shot examples (k)
 
-Always split evenly between classes (k/2 per class). The exploration phase compared 4/8/16/32; the main experiment uses `8`.
+Main experiments always split evenly between classes (k/2 per class), randomly ordered. The exploration phase compared 4/8/16/32; the main experiment uses `8`. For ablations, class ratio and ordering are tested as well.
 
 ### `embedding_mode` — retrieval index type (dynamic only)
 
@@ -124,7 +117,7 @@ Always split evenly between classes (k/2 per class). The exploration phase compa
 
 ## Models
 
-Inference models (loaded from the HuggingFace Hub via `AutoModelForCausalLM`, `bfloat16`, `device_map='auto'`):
+Inference models (loaded from the HuggingFace Hub via `AutoModelForCausalLM`):
 
 - `google/gemma-4-26B-A4B-it`
 - `google/gemma-4-E4B-it`
@@ -137,14 +130,14 @@ The `LM` class in `util.py` handles automatic batch sizing based on available GP
 
 ## Running Experiments
 
-Requirements: a CUDA GPU and the `HF_TOKEN` environment variable (HuggingFace Hub access). Key dependencies: `transformers`/`torch`, `langchain`/`langchain-community`/`langchain-huggingface`, `scikit-learn`, `pandas`, `jinja2`, `pyyaml`, `tqdm`.
+Key dependencies: `transformers`/`torch`, `langchain`/`langchain-community`/`langchain-huggingface`, `scikit-learn`, `pandas`, `jinja2`, `pyyaml`, `tqdm`.
 
-**Note on paths:** `config.yaml` ships with container-internal absolute paths (`/data`, `/results`, `/templates`) used on the HPC cluster — adapt `data_path`, `results_path`, and `template_path` to your environment. The evaluation and visualisation scripts use paths relative to `src/`, so run them from there.
+**Note on paths:** `config.yaml` ships with absolute paths (`/data`, `/results`, `/templates`) — adapt `data_path`, `results_path`, and `template_path` to your environment. The evaluation and visualisation scripts use paths relative to `src/`, so run them from there.
 
 ```bash
 cd src
 
-# One configuration (as set in config.yaml), 70/30 split:
+# One configuration (as set in config.yaml):
 python single_run.py
 
 # Full grid over all valid configurations, 4-fold CV.
@@ -159,10 +152,8 @@ python knn_baseline.py
 Result CSVs contain the columns `id`, `text`, `true_label`, `predicted_label`, `reply` and are named
 
 ```
-{model}_{prompt_mode}_{demonstration_mode}_{demonstration_size}_{embedding_mode}_{retrieval_mode}[_fold-N][_thinking].csv
+{model}_{prompt_mode}_{demonstration_mode}_{demonstration_size}_{embedding_mode}_{retrieval_mode}[_fold-N].csv
 ```
-
-with `None` values appearing literally as `None`, e.g. `gemma-4-26B-A4B-it_implicit_dynamic_8_dense_similarity_fold-0.csv`.
 
 ## Evaluation
 
@@ -175,17 +166,7 @@ cd src
 python consolidate_folds.py
 
 # Compute score tables (parses configs from the result filenames):
-python evaluate_final_run.py
+python evaluate.py final_run
 ```
 
-This produces `score_table_folds.csv` (one row per config and fold) and `score_table_consolidated.csv` (one row per config, all folds concatenated — every post appears exactly once since the test splits are disjoint). Both tables for the main experiment are checked in under [results/final_runs/](results/final_runs/).
-
-## Visualisations
-
-The scripts in [src/visualisations/](src/visualisations/) build all figures from the score tables (never from individual result CSVs) and save each figure as both `.pdf` and `.svg`:
-
-- `spec_graph_f1.py` — specification curve of F1 Macro across all configurations, with fold-level variance as boxplots
-- `impact_graph_f1.py` — impact of each configuration axis on F1 Macro (tornado, marginal-means, and heatmap views)
-- `visualise_exploration.py` — F1 Macro by demonstration size from the exploration phase
-
-All figures use a fixed, colorblind-safe model color scheme (Okabe–Ito palette) defined in [src/visualisations/model_colors.py](src/visualisations/model_colors.py) — import from there instead of defining ad-hoc palettes. Generated figures are checked in under [results/final_runs/figures/](results/final_runs/figures/) and [results/exploration/figures/](results/exploration/figures/).
+This produces `score_table_consolidated.csv`.
