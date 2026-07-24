@@ -1,6 +1,6 @@
-# GermEval 2026 — Prompting Strategies for Legal Hate Speech Classification
+# GermEval 2026 — DEF
 
-Research code for benchmarking prompting strategies on a binary classification task: given a German social media post, decide whether it is **prosecutable under §§185–187 StGB** (Beleidigung, üble Nachrede, Verleumdung). The project compares zero-shot and dynamic few-shot prompting (with several retrieval modes) across multiple open-weight LLMs, evaluated with stratified 4-fold cross-validation.
+This repo contains the code to our submission to the Shared Task [*GermEval 2026: Harmful Content Detection*](https://www.codabench.org/competitions/14006/#/pages-tab). We systematically test Retrieval-based In-Context Learning (RetICL) strategies for the detection of defamatory offences prosecutable under §§ 185-187 StGB. We evaluate zero-shot, static few-shot and dynamic few-shot approaches as well as different levels of task decomposition across mutliple open-weights LLMs. More details are given in our paper [MUCnoHARM@GermEval Shared Task 2026: Retrieval-based In-Context Learning for Defamatory Offences, and Where It Falls Short (link coming)]().
 
 ## Task and Legal Framework
 
@@ -24,6 +24,7 @@ The annotation schema follows Zufall et al. (2019), [*From legal to technical co
 ```
 ├── config.yaml                    # Config for a single experiment run
 ├── data/
+│   ├── def_test.csv               # Test dataset without class labels
 │   ├── def_train.csv              # Main dataset (semicolon-delimited; columns: description, DEF, ...)
 │   └── single_step_annotation.csv # Subset with per-step annotations for the 6 decision criteria (comma-delimited)
 ├── templates/                     # Prompt templates, one file per prompt_mode
@@ -31,17 +32,26 @@ The annotation schema follows Zufall et al. (2019), [*From legal to technical co
 │   ├── description
 │   ├── implicit
 │   ├── explicit
-│   └── explicit_decisions.yaml    # Maps each step's True/False output → "continue" or final label
+│   ├── explicit_decisions.yaml    # Maps each step's True/False output → "continue" or final label
+│   ├── static_implicit.yaml       # Static demonstration set optimised for implicit conditioning
+│   └── static_title.yaml          # Static demonstration set optimised for title conditioning
 ├── src/
 │   ├── util.py                    # All pipeline code: LM, KnowledgeBase, PromptConstructor, helpers
-│   ├── single_run.py              # One configuration on a 70/30 split (config.yaml)
+│   ├── single_run.py              # One configuration, 4-fold CV (config.yaml)
 │   ├── run_all.py                 # Full grid over all valid configurations, 4-fold CV
 │   ├── knn_baseline.py            # Non-LLM baseline: 1-NN over TF-IDF vectors, same CV folds
 │   ├── consolidate_folds.py       # Merges per-fold result CSVs into one CSV per configuration
-│   ├── evaluate_final_run.py      # Computes score tables (per-fold and consolidated)
-│   └── visualisations/            # Figure scripts (specification curve, axis impact, ...)
+│   ├── evaluate.py                # Computes score tables for specified experiment
+│   ├── ablation_balance_X_order.py# Ablation for class ratio and order in demonstrations
+│   ├── ablation_static.py         # Ablation for "optimised" static few-shot demonstrations
+│   ├── exploration.py             # Exploration of few-shot size k
+│   ├── competition_run.py         # Running inference on the test set
+│   ├── predict_gemma4_ensemble.py # Ensemble Prediction with fine-tuned gemma models (per fold)
+│   └── visualisations/            # Figure and table scripts
 └── results/
-    ├── final_runs/                # Score tables, figures, and kNN baseline of the main experiment
+    ├── final_run/                 # Score tables, figures, and kNN baseline of the main experiment
+    ├── ablations/                 # All ablation experiment results
+    ├── gemma-inference/           # Results for the gemma inference runs
     └── exploration/               # Hyperparameter exploration (demonstration size 4/8/16/32)
 ```
 
