@@ -1,10 +1,12 @@
 model,prompt_mode,demo_mode,demo_size,embedding_mode,retrieval_mode,thinking_mode,n_scored,n_abstained,accuracy,f1_macro,cohen_kappa,precision_true,recall_true,precision_false,recall_false
+gemma-4-E4B-it-qlora,implicit,None,0,None,None,False,3263,0,0.9044,0.7405,0.4844,0.702,0.4313,0.9215,0.9733
 gemma-4-26B-A4B-it,implicit,dynamic,8,dense,similarity,False,3263,0,0.8495,0.7325,0.4718,0.4449,0.7398,0.958,0.8655
 gemma-4-26B-A4B-it,implicit,dynamic,8,dense,mmr,False,3263,0,0.8409,0.7232,0.4547,0.4278,0.7422,0.9579,0.8553
 gemma-4-26B-A4B-it,implicit,dynamic,8,dense,diversity,False,3263,0,0.833,0.7216,0.4548,0.4171,0.788,0.9645,0.8395
 gemma-4-26B-A4B-it,implicit,dynamic,8,fusion,similarity,False,3263,0,0.8363,0.7185,0.4464,0.4193,0.7446,0.958,0.8497
 gemma-4-26B-A4B-it,implicit,dynamic,8,None,random,False,3263,0,0.8287,0.7173,0.4474,0.41,0.7904,0.9647,0.8343
 gemma-4-26B-A4B-it,description,dynamic,8,dense,similarity,False,3263,0,0.8302,0.7164,0.4445,0.411,0.7735,0.9621,0.8385
+gpt-5.5-2026-04-23,explicit,dynamic,8,dense,similarity,False,3263,0,0.8339,0.7163,0.4424,0.415,0.747,0.9583,0.8466
 gemma-4-26B-A4B-it,implicit,dynamic,8,sparse,similarity,False,3263,0,0.8299,0.7142,0.4397,0.4093,0.7614,0.9603,0.8399
 gemma-4-26B-A4B-it,explicit,dynamic,8,dense,mmr,False,3263,0,0.8593,0.7114,0.4239,0.457,0.5639,0.9342,0.9024
 gemma-4-26B-A4B-it,description,dynamic,8,fusion,similarity,False,3263,0,0.8201,0.7087,0.4322,0.3964,0.7928,0.9647,0.8241
@@ -47,12 +49,12 @@ gemma-4-E4B-it,title,dynamic,8,dense,diversity,False,3263,0,0.7064,0.5996,0.2528
 gemma-4-E4B-it,title,dynamic,8,dense,similarity,False,3263,0,0.7058,0.5995,0.253,0.2665,0.7494,0.9504,0.6994
 Qwen3.5-9B,explicit,None,0,None,None,False,3263,0,0.8109,0.5975,0.1955,0.286,0.3253,0.8997,0.8817
 gemma-4-E4B-it,description,dynamic,8,dense,similarity,False,3263,0,0.6966,0.5975,0.2564,0.2661,0.788,0.9567,0.6833
-Qwen3.5-9B,implicit,dynamic,8,fusion,similarity,False,3262,1,0.7051,0.5972,0.2479,0.264,0.7373,0.9482,0.7004
 Qwen3.5-9B,implicit,dynamic,8,dense,mmr,False,3262,1,0.702,0.5972,0.2506,0.2646,0.7542,0.9509,0.6944
+Qwen3.5-9B,implicit,dynamic,8,fusion,similarity,False,3262,1,0.7051,0.5972,0.2479,0.264,0.7373,0.9482,0.7004
 Qwen3.5-9B,implicit,dynamic,8,sparse,similarity,False,3263,0,0.7076,0.5971,0.2454,0.2634,0.7229,0.9459,0.7054
 gemma-4-E4B-it,description,None,0,None,None,False,3263,0,0.7055,0.5968,0.2465,0.2634,0.7325,0.9474,0.7015
-Qwen3.5-9B,implicit,dynamic,8,dense,similarity,False,3262,1,0.7091,0.5965,0.2426,0.2625,0.7108,0.9439,0.7088
 gemma-4-E4B-it,title,dynamic,8,fusion,similarity,False,3263,0,0.6945,0.5965,0.2557,0.2653,0.7928,0.9575,0.6801
+Qwen3.5-9B,implicit,dynamic,8,dense,similarity,False,3262,1,0.7091,0.5965,0.2426,0.2625,0.7108,0.9439,0.7088
 gemma-4-E4B-it,description,dynamic,8,fusion,similarity,False,3263,0,0.6853,0.5942,0.2589,0.265,0.8313,0.9643,0.664
 Qwen3.5-9B,description,dynamic,8,sparse,similarity,False,3262,1,0.7149,0.5932,0.2298,0.2578,0.6602,0.9359,0.7229
 gemma-4-E4B-it,explicit,None,0,None,None,False,3258,5,0.795,0.5884,0.1791,0.2636,0.3398,0.8994,0.8614
@@ -86,6 +88,7 @@ EuroLLM-22B-Instruct-2512,explicit,dynamic,8,sparse,similarity,False,3262,1,0.53
 EuroLLM-22B-Instruct-2512,explicit,dynamic,8,dense,similarity,False,3262,1,0.523,0.4729,0.1295,0.1901,0.8434,0.9543,0.4763
 EuroLLM-22B-Instruct-2512,explicit,dynamic,8,fusion,similarity,False,3262,1,0.5172,0.4643,0.1119,0.1817,0.7976,0.9417,0.4763
 EuroLLM-22B-Instruct-2512,implicit,dynamic,8,dense,similarity,False,3261,2,0.4854,0.4471,0.1151,0.1822,0.8723,0.9584,0.429
+gpt-5.5-2026-04-23,title,None,0,None,None,False,3263,0,0.4643,0.4396,0.138,0.1919,1.0,1.0,0.3862
 EuroLLM-22B-Instruct-2512,explicit,dynamic,8,dense,mmr,False,3261,2,0.4756,0.4379,0.1032,0.1764,0.8506,0.9508,0.4209
 EuroLLM-22B-Instruct-2512,description,dynamic,8,dense,similarity,False,3262,1,0.4739,0.436,0.1001,0.1749,0.8434,0.9485,0.4201
 EuroLLM-22B-Instruct-2512,explicit,dynamic,8,None,random,False,3262,1,0.4795,0.4338,0.0808,0.1661,0.7687,0.9284,0.4373

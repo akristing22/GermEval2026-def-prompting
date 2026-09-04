@@ -16,10 +16,12 @@ table_d_full.tex            – full appendix table, all configurations
 table_e_best_per_model.tex  – best config per model with full metrics
 table_abstentions.tex       – abstention counts per model
 table_ablation_balance_order.tex – model × (ratio × order), balance_X_order ablation
-table_ablation_pr_marginal.tex – model × factor level, true-class P/R marginalised
-                                 over the other factor (balance_X_order ablation)
-table_ablation_pr_grid.tex   – model × ratio rows × order, true-class P/R for every
-                                 ratio × order combination (balance_X_order ablation)
+table_ablation_pr_marginal.tex – model × factor level, true-class P/R and macro F1
+                                 marginalised over the other factor
+                                 (balance_X_order ablation)
+table_ablation_pr_grid.tex   – model × ratio rows × order, true-class P/R and macro
+                                 F1 for every ratio × order combination
+                                 (balance_X_order ablation)
 """
 
 import os
@@ -494,27 +496,29 @@ def make_table_ablation(df):
 # ---------------------------------------------------------------------------
 
 def make_table_ablation_pr_marginal(df):
-    """True-class precision/recall marginalised over each ablation factor.
+    """True-class precision/recall and macro F1 marginalised over each factor.
 
     Ratio levels average over the order levels; order levels average over the
-    ratio levels (mean of the per-cell precision_true/recall_true, matching the
-    marginal means in impact_ablations.py). Within each factor block the best
-    P_T and best R_T per model are bold.
+    ratio levels (mean of the per-cell precision_true/recall_true/f1_macro,
+    matching the marginal means in impact_ablations.py). Within each factor
+    block the best F1, P_T and R_T per model are bold.
     """
     ratio_p = df.groupby(["model", "ratio"])["precision_true"].mean()
     ratio_r = df.groupby(["model", "ratio"])["recall_true"].mean()
+    ratio_f = df.groupby(["model", "ratio"])["f1_macro"].mean()
     order_p = df.groupby(["model", "order"])["precision_true"].mean()
     order_r = df.groupby(["model", "order"])["recall_true"].mean()
+    order_f = df.groupby(["model", "order"])["f1_macro"].mean()
 
     n_r, n_o = len(RATIO_ORDER), len(ORDER_ORDER)
-    col_spec = "l" + "rr" * (n_r + n_o)
+    col_spec = "l" + "rrr" * (n_r + n_o)
     lines = [
         r"\begin{table*}[t]",
         r"\centering",
-        r"\caption{True-class precision (P$_\mathsf{T}$) and recall (R$_\mathsf{T}$) "
-        r"marginalised over each factor of the balance $\times$ order ablation "
-        r"(ratio levels averaged over order; order levels averaged over ratio). "
-        r"\textbf{Bold}: best value per model within each factor block.}",
+        r"\caption{$F1_{macro}$ and true-class precision (P$_\mathsf{T}$) and recall "
+        r"(R$_\mathsf{T}$) marginalised over each factor of the balance $\times$ order "
+        r"ablation (ratio levels averaged over order; order levels averaged over "
+        r"ratio). \textbf{Bold}: best value per model within each factor block.}",
         r"\label{tab:ablation-pr-marginal}",
         r"\small",
         r"\setlength{\tabcolsep}{4pt}",
@@ -524,25 +528,25 @@ def make_table_ablation_pr_marginal(df):
 
     # Header row 1: Ratio / Order super-groups
     h1 = ("Model"
-          + r" & \multicolumn{" + str(2 * n_r) + r"}{c}{Ratio}"
-          + r" & \multicolumn{" + str(2 * n_o) + r"}{c}{Order}")
+          + r" & \multicolumn{" + str(3 * n_r) + r"}{c}{Ratio}"
+          + r" & \multicolumn{" + str(3 * n_o) + r"}{c}{Order}")
     lines.append(h1 + r" \\")
-    end_ratio = 1 + 2 * n_r
+    end_ratio = 1 + 3 * n_r
     lines.append(r"\cmidrule(lr){2-" + str(end_ratio) + "}"
-                 + r" \cmidrule(lr){" + str(end_ratio + 1) + "-" + str(end_ratio + 2 * n_o) + "}")
+                 + r" \cmidrule(lr){" + str(end_ratio + 1) + "-" + str(end_ratio + 3 * n_o) + "}")
 
-    # Header row 2: factor-level names, each spanning P/R
+    # Header row 2: factor-level names, each spanning F1/P/R
     levels = [("ratio", lvl) for lvl in RATIO_ORDER] + [("order", lvl) for lvl in ORDER_ORDER]
     h2 = "Model"
     for fac, lvl in levels:
         lab = RATIO_LABELS[lvl] if fac == "ratio" else ORDER_LABELS[lvl]
-        h2 += r" & \multicolumn{2}{c}{" + lab + "}"
+        h2 += r" & \multicolumn{3}{c}{" + lab + "}"
     lines.append(h2 + r" \\")
-    cmid = [r"\cmidrule(lr){" + f"{2 + 2 * i}-{3 + 2 * i}" + "}" for i in range(n_r + n_o)]
+    cmid = [r"\cmidrule(lr){" + f"{2 + 3 * i}-{4 + 3 * i}" + "}" for i in range(n_r + n_o)]
     lines.append(" ".join(cmid))
 
-    # Header row 3: P/R sub-columns
-    h3 = "".join([r" & P$_\mathsf{T}$ & R$_\mathsf{T}$" for _ in levels])
+    # Header row 3: F1/P/R sub-columns
+    h3 = "".join([r" & F1 & P$_\mathsf{T}$ & R$_\mathsf{T}$" for _ in levels])
     lines.append(h3 + r" \\")
     lines.append(r"\midrule")
 
@@ -553,9 +557,12 @@ def make_table_ablation_pr_marginal(df):
     for model in MODEL_ORDER:
         rp = {lvl: ratio_p.get((model, lvl), float("nan")) for lvl in RATIO_ORDER}
         rr = {lvl: ratio_r.get((model, lvl), float("nan")) for lvl in RATIO_ORDER}
+        rf = {lvl: ratio_f.get((model, lvl), float("nan")) for lvl in RATIO_ORDER}
         op = {lvl: order_p.get((model, lvl), float("nan")) for lvl in ORDER_ORDER}
         orr = {lvl: order_r.get((model, lvl), float("nan")) for lvl in ORDER_ORDER}
-        best = {"rp": _best(rp), "rr": _best(rr), "op": _best(op), "orr": _best(orr)}
+        of = {lvl: order_f.get((model, lvl), float("nan")) for lvl in ORDER_ORDER}
+        best = {"rp": _best(rp), "rr": _best(rr), "rf": _best(rf),
+                "op": _best(op), "orr": _best(orr), "of": _best(of)}
 
         def cell(v, target):
             is_best = target is not None and not pd.isna(v) and abs(v - target) < 1e-6
@@ -563,9 +570,11 @@ def make_table_ablation_pr_marginal(df):
 
         row = MODEL_LABELS[model]
         for lvl in RATIO_ORDER:
-            row += f" & {cell(rp[lvl], best['rp'])} & {cell(rr[lvl], best['rr'])}"
+            row += (f" & {cell(rf[lvl], best['rf'])} & {cell(rp[lvl], best['rp'])}"
+                    f" & {cell(rr[lvl], best['rr'])}")
         for lvl in ORDER_ORDER:
-            row += f" & {cell(op[lvl], best['op'])} & {cell(orr[lvl], best['orr'])}"
+            row += (f" & {cell(of[lvl], best['of'])} & {cell(op[lvl], best['op'])}"
+                    f" & {cell(orr[lvl], best['orr'])}")
         lines.append(row + r" \\")
 
     lines += [r"\bottomrule", r"\end{tabular}", r"\end{table*}"]
@@ -577,22 +586,23 @@ def make_table_ablation_pr_marginal(df):
 # ---------------------------------------------------------------------------
 
 def make_table_ablation_pr_grid(df):
-    """True-class precision/recall for every (model, ratio, order) combination.
+    """True-class precision/recall and macro F1 per (model, ratio, order) cell.
 
     Models group rows (ratio as a sub-row); the three order levels are column
-    groups, each split into P_T and R_T. The best P_T and best R_T per model
+    groups, each split into F1, P_T and R_T. The best F1, P_T and R_T per model
     (across all six of its combinations) are bold.
     """
     p = df.set_index(["model", "ratio", "order"])["precision_true"]
     r = df.set_index(["model", "ratio", "order"])["recall_true"]
+    f = df.set_index(["model", "ratio", "order"])["f1_macro"]
 
     n_o = len(ORDER_ORDER)
-    col_spec = "ll" + "rr" * n_o
+    col_spec = "ll" + "rrr" * n_o
     lines = [
         r"\begin{table*}[t]",
         r"\centering",
-        r"\caption{True-class precision (P$_\mathsf{T}$) and recall (R$_\mathsf{T}$) "
-        r"for every demonstration ratio $\times$ order combination "
+        r"\caption{$F1_{macro}$ and true-class precision (P$_\mathsf{T}$) and recall "
+        r"(R$_\mathsf{T}$) for every demonstration ratio $\times$ order combination "
         r"(balance $\times$ order ablation). "
         r"\textbf{Bold}: best value per model across all combinations.}",
         r"\label{tab:ablation-pr-grid}",
@@ -605,13 +615,13 @@ def make_table_ablation_pr_grid(df):
     # Header row 1: order super-groups
     h1 = "Model & Ratio"
     for order in ORDER_ORDER:
-        h1 += r" & \multicolumn{2}{c}{" + ORDER_LABELS[order] + "}"
+        h1 += r" & \multicolumn{3}{c}{" + ORDER_LABELS[order] + "}"
     lines.append(h1 + r" \\")
-    cmid = [r"\cmidrule(lr){" + f"{3 + 2 * i}-{4 + 2 * i}" + "}" for i in range(n_o)]
+    cmid = [r"\cmidrule(lr){" + f"{3 + 3 * i}-{5 + 3 * i}" + "}" for i in range(n_o)]
     lines.append(" ".join(cmid))
 
-    # Header row 2: P/R sub-columns
-    h2 = " & " + "".join([r" & P$_\mathsf{T}$ & R$_\mathsf{T}$" for _ in ORDER_ORDER])
+    # Header row 2: F1/P/R sub-columns
+    h2 = " & " + "".join([r" & F1 & P$_\mathsf{T}$ & R$_\mathsf{T}$" for _ in ORDER_ORDER])
     lines.append(h2 + r" \\")
     lines.append(r"\midrule")
 
@@ -620,8 +630,11 @@ def make_table_ablation_pr_grid(df):
                  for ratio in RATIO_ORDER for order in ORDER_ORDER]
         all_r = [r.get((model, ratio, order), float("nan"))
                  for ratio in RATIO_ORDER for order in ORDER_ORDER]
+        all_f = [f.get((model, ratio, order), float("nan"))
+                 for ratio in RATIO_ORDER for order in ORDER_ORDER]
         best_p = max([v for v in all_p if not pd.isna(v)], default=None)
         best_r = max([v for v in all_r if not pd.isna(v)], default=None)
+        best_f = max([v for v in all_f if not pd.isna(v)], default=None)
 
         for r_idx, ratio in enumerate(RATIO_ORDER):
             label = MODEL_LABELS[model] if r_idx == 0 else ""
@@ -629,9 +642,11 @@ def make_table_ablation_pr_grid(df):
             for order in ORDER_ORDER:
                 pv = p.get((model, ratio, order), float("nan"))
                 rv = r.get((model, ratio, order), float("nan"))
+                fv = f.get((model, ratio, order), float("nan"))
                 bp = best_p is not None and not pd.isna(pv) and abs(pv - best_p) < 1e-6
                 br = best_r is not None and not pd.isna(rv) and abs(rv - best_r) < 1e-6
-                row += f" & {fmt(pv, bold=bp)} & {fmt(rv, bold=br)}"
+                bf = best_f is not None and not pd.isna(fv) and abs(fv - best_f) < 1e-6
+                row += f" & {fmt(fv, bold=bf)} & {fmt(pv, bold=bp)} & {fmt(rv, bold=br)}"
             lines.append(row + r" \\")
         if m_idx != len(MODEL_ORDER) - 1:
             lines.append(r"\addlinespace")

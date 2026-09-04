@@ -1,21 +1,21 @@
 \begin{table*}[t]
 \centering
-\caption{True-class precision (P$_\mathsf{T}$) and recall (R$_\mathsf{T}$) marginalised over each factor of the balance $\times$ order ablation (ratio levels averaged over order; order levels averaged over ratio). \textbf{Bold}: best value per model within each factor block.}
+\caption{$F1_{macro}$ and true-class precision (P$_\mathsf{T}$) and recall (R$_\mathsf{T}$) marginalised over each factor of the balance $\times$ order ablation (ratio levels averaged over order; order levels averaged over ratio). \textbf{Bold}: best value per model within each factor block.}
 \label{tab:ablation-pr-marginal}
 \small
 \setlength{\tabcolsep}{4pt}
-\begin{tabular}{lrrrrrrrrrr}
+\begin{tabular}{lrrrrrrrrrrrrrrr}
 \toprule
-Model & \multicolumn{4}{c}{Ratio} & \multicolumn{6}{c}{Order} \\
-\cmidrule(lr){2-5} \cmidrule(lr){6-11}
-Model & \multicolumn{2}{c}{Balanced} & \multicolumn{2}{c}{Proportional} & \multicolumn{2}{c}{Random} & \multicolumn{2}{c}{True first} & \multicolumn{2}{c}{True last} \\
-\cmidrule(lr){2-3} \cmidrule(lr){4-5} \cmidrule(lr){6-7} \cmidrule(lr){8-9} \cmidrule(lr){10-11}
- & P$_\mathsf{T}$ & R$_\mathsf{T}$ & P$_\mathsf{T}$ & R$_\mathsf{T}$ & P$_\mathsf{T}$ & R$_\mathsf{T}$ & P$_\mathsf{T}$ & R$_\mathsf{T}$ & P$_\mathsf{T}$ & R$_\mathsf{T}$ \\
+Model & \multicolumn{6}{c}{Ratio} & \multicolumn{9}{c}{Order} \\
+\cmidrule(lr){2-7} \cmidrule(lr){8-16}
+Model & \multicolumn{3}{c}{Balanced} & \multicolumn{3}{c}{Proportional} & \multicolumn{3}{c}{Random} & \multicolumn{3}{c}{True first} & \multicolumn{3}{c}{True last} \\
+\cmidrule(lr){2-4} \cmidrule(lr){5-7} \cmidrule(lr){8-10} \cmidrule(lr){11-13} \cmidrule(lr){14-16}
+ & F1 & P$_\mathsf{T}$ & R$_\mathsf{T}$ & F1 & P$_\mathsf{T}$ & R$_\mathsf{T}$ & F1 & P$_\mathsf{T}$ & R$_\mathsf{T}$ & F1 & P$_\mathsf{T}$ & R$_\mathsf{T}$ & F1 & P$_\mathsf{T}$ & R$_\mathsf{T}$ \\
 \midrule
-Gemma-4 26B & 0.436 & \textbf{0.720} & \textbf{0.486} & 0.614 & 0.450 & 0.675 & \textbf{0.502} & 0.624 & 0.431 & \textbf{0.702} \\
-Gemma-4 E4B & 0.245 & \textbf{0.802} & \textbf{0.397} & 0.520 & 0.322 & 0.665 & \textbf{0.339} & \textbf{0.681} & 0.302 & 0.636 \\
-Qwen3.5 9B & 0.329 & \textbf{0.681} & \textbf{0.526} & 0.316 & 0.409 & 0.523 & \textbf{0.568} & 0.343 & 0.307 & \textbf{0.629} \\
-EuroLLM 22B & 0.188 & \textbf{0.854} & \textbf{0.451} & 0.430 & 0.289 & 0.653 & \textbf{0.422} & 0.522 & 0.248 & \textbf{0.751} \\
+Gemma-4 26B & 0.723 & 0.436 & \textbf{0.720} & \textbf{0.732} & \textbf{0.486} & 0.614 & 0.725 & 0.450 & 0.675 & \textbf{0.740} & \textbf{0.502} & 0.624 & 0.717 & 0.431 & \textbf{0.702} \\
+Gemma-4 E4B & 0.571 & 0.245 & \textbf{0.802} & \textbf{0.677} & \textbf{0.397} & 0.520 & 0.628 & 0.322 & 0.665 & \textbf{0.641} & \textbf{0.339} & \textbf{0.681} & 0.603 & 0.302 & 0.636 \\
+Qwen3.5 9B & 0.630 & 0.329 & \textbf{0.681} & \textbf{0.641} & \textbf{0.526} & 0.316 & 0.633 & 0.409 & 0.523 & \textbf{0.656} & \textbf{0.568} & 0.343 & 0.617 & 0.307 & \textbf{0.629} \\
+EuroLLM 22B & 0.451 & 0.188 & \textbf{0.854} & \textbf{0.657} & \textbf{0.451} & 0.430 & 0.554 & 0.289 & 0.653 & \textbf{0.601} & \textbf{0.422} & 0.522 & 0.507 & 0.248 & \textbf{0.751} \\
 \bottomrule
 \end{tabular}
 \end{table*}
